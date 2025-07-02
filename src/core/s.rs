@@ -1,6 +1,9 @@
 use blake3::hash;
 use rand::{Rng, rng};
-use std::{iter::zip, ops::Add};
+use std::{
+    iter::zip,
+    ops::{Add, BitXor},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct S(pub [u8; 32]);
@@ -47,6 +50,20 @@ impl Add for S {
             carry = x / 256;
         }
         Self(s)
+    }
+}
+
+impl BitXor for &S {
+    type Output = S;
+
+    fn bitxor(self, _rhs: Self) -> Self::Output {
+        todo!()
+    }
+}
+
+impl AsRef<[u8]> for S {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
 }
 

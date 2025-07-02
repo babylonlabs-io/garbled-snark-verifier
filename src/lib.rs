@@ -14,3 +14,5 @@ pub mod bag {
         Rc::new(RefCell::new(Wire::new()))
     }
 }
+
+pub mod duplo;
