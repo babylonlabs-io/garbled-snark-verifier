@@ -1,4 +1,5 @@
 use crate::bag::*;
+use crate::core::gate::GateType;
 use std::fs;
 
 pub fn parser(filename: &str) -> (Circuit, Vec<Wires>, Vec<Wires>) {
@@ -45,7 +46,18 @@ pub fn parser(filename: &str) -> (Circuit, Vec<Wires>, Vec<Wires>) {
         for _ in 0..number_of_outputs {
             output_wires.push(words.next().unwrap().parse().unwrap());
         }
-        let gate_type = words.next().unwrap().to_lowercase();
+        let gate_type_str = words.next().unwrap().to_lowercase();
+        let gate_type = match gate_type_str.as_str() {
+            "and" => GateType::And,
+            "or" => GateType::Or,
+            "xor" => GateType::Xor,
+            "nand" => GateType::Nand,
+            "inv" | "not" => GateType::Not,
+            "xnor" => GateType::Xnor,
+            "nimp" => GateType::Nimp,
+            "nsor" => GateType::Nsor,
+            _ => panic!("Unknown gate type: {}", gate_type_str),
+        };
         let gate = Gate::new(
             wires[input_wires[0]].clone(),
             if number_of_inputs == 1 {

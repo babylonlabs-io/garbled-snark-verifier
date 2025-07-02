@@ -3,12 +3,24 @@ use crate::core::utils::{LIMB_LEN, N_LIMBS, bit_to_usize, convert_between_blake3
 use bitvm::{bigint::U256, hash::blake3::blake3_compute_script_with_limb, treepp::*};
 use std::ops::{Add, AddAssign};
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum GateType {
+    And,
+    Or,
+    Xor,
+    Nand,
+    Not,
+    Xnor,
+    Nimp,
+    Nsor,
+}
+
 #[derive(Clone)]
 pub struct Gate {
     pub wire_a: Rc<RefCell<Wire>>,
     pub wire_b: Rc<RefCell<Wire>>,
     pub wire_c: Rc<RefCell<Wire>>,
-    pub name: String,
+    pub gate_type: GateType,
 }
 
 impl Gate {
@@ -16,13 +28,13 @@ impl Gate {
         wire_a: Rc<RefCell<Wire>>,
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
-        name: String,
+        gate_type: GateType,
     ) -> Self {
         Self {
             wire_a,
             wire_b,
             wire_c,
-            name,
+            gate_type,
         }
     }
 
@@ -31,7 +43,7 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a, wire_b, wire_c, "and".to_string())
+        Self::new(wire_a, wire_b, wire_c, GateType::And)
     }
 
     pub fn nand(
@@ -39,7 +51,7 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a, wire_b, wire_c, "nand".to_string())
+        Self::new(wire_a, wire_b, wire_c, GateType::Nand)
     }
 
     pub fn or(
@@ -47,7 +59,7 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a, wire_b, wire_c, "or".to_string())
+        Self::new(wire_a, wire_b, wire_c, GateType::Or)
     }
 
     pub fn xor(
@@ -55,7 +67,7 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a, wire_b, wire_c, "xor".to_string())
+        Self::new(wire_a, wire_b, wire_c, GateType::Xor)
     }
 
     pub fn xnor(
@@ -63,11 +75,11 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a, wire_b, wire_c, "xnor".to_string())
+        Self::new(wire_a, wire_b, wire_c, GateType::Xnor)
     }
 
     pub fn not(wire_a: Rc<RefCell<Wire>>, wire_c: Rc<RefCell<Wire>>) -> Self {
-        Self::new(wire_a.clone(), wire_a.clone(), wire_c, "not".to_string())
+        Self::new(wire_a.clone(), wire_a.clone(), wire_c, GateType::Not)
     }
 
     pub fn nimp(
@@ -75,7 +87,7 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a.clone(), wire_b.clone(), wire_c, "nimp".to_string())
+        Self::new(wire_a.clone(), wire_b.clone(), wire_c, GateType::Nimp)
     }
 
     pub fn nsor(
@@ -83,76 +95,72 @@ impl Gate {
         wire_b: Rc<RefCell<Wire>>,
         wire_c: Rc<RefCell<Wire>>,
     ) -> Self {
-        Self::new(wire_a.clone(), wire_b.clone(), wire_c, "nsor".to_string())
+        Self::new(wire_a.clone(), wire_b.clone(), wire_c, GateType::Nsor)
     }
 
     pub fn f(&self) -> fn(bool, bool) -> bool {
-        match self.name.as_str() {
-            "and" => {
+        match self.gate_type {
+            GateType::And => {
                 fn and(a: bool, b: bool) -> bool {
                     a & b
                 }
                 and
             }
-            "or" => {
+            GateType::Or => {
                 fn or(a: bool, b: bool) -> bool {
                     a | b
                 }
                 or
             }
-            "xor" => {
+            GateType::Xor => {
                 fn xor(a: bool, b: bool) -> bool {
                     a ^ b
                 }
                 xor
             }
-            "nand" => {
+            GateType::Nand => {
                 fn nand(a: bool, b: bool) -> bool {
                     !(a & b)
                 }
                 nand
             }
-            "inv" | "not" => {
+            GateType::Not => {
                 fn not(a: bool, _b: bool) -> bool {
                     !a
                 }
                 not
             }
-            "xnor" => {
+            GateType::Xnor => {
                 fn xnor(a: bool, b: bool) -> bool {
                     !(a ^ b)
                 }
                 xnor
             }
-            "nimp" => {
+            GateType::Nimp => {
                 fn nimp(a: bool, b: bool) -> bool {
                     (a) && (!b)
                 }
                 nimp
             }
-            "nsor" => {
+            GateType::Nsor => {
                 fn nsor(a: bool, b: bool) -> bool {
                     a | (!b)
                 }
                 nsor
             }
-            _ => {
-                panic!("this gate type is not allowed");
-            }
         }
     }
 
     pub fn evaluation_script(&self) -> Script {
-        match self.name.as_str() {
-            "and" => script! { OP_BOOLAND },
-            "or" => script! { OP_BOOLOR },
-            "xor" => script! { OP_NUMNOTEQUAL },
-            "nand" => script! { OP_BOOLAND OP_NOT },
-            "inv" | "not" => script! { OP_DROP OP_NOT },
-            "xnor" => script! { OP_NUMNOTEQUAL OP_NOT },
-            "nimp" => script! { OP_NOT OP_BOOLAND },
-            "nsor" => script! { OP_NOT OP_BOOLOR},
-            _ => panic!("this gate type is not allowed"),
+        match self.gate_type {
+            GateType::And => script! { OP_BOOLAND },
+            GateType::Or => script! { OP_BOOLOR },
+            GateType::Xor => script! { OP_NUMNOTEQUAL },
+            GateType::Nand => script! { OP_BOOLAND OP_NOT },
+            GateType::Not => script! { OP_DROP OP_NOT },
+            GateType::Xnor => script! { OP_NUMNOTEQUAL OP_NOT },
+            GateType::Nimp => script! { OP_NOT OP_BOOLAND },
+            GateType::Nsor => script! { OP_NOT OP_BOOLOR},
         }
     }
 

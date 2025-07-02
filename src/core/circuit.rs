@@ -1,4 +1,7 @@
-use crate::{bag::*, core::gate::GateCount};
+use crate::{
+    bag::*,
+    core::gate::{GateCount, GateType},
+};
 
 pub struct Circuit(pub Wires, pub Vec<Gate>);
 
@@ -46,16 +49,15 @@ impl Circuit {
         let mut nimp = 0;
         let mut nsor = 0;
         for gate in self.1.clone() {
-            match gate.name.as_str() {
-                "and" => and += 1,
-                "or" => or += 1,
-                "xor" => xor += 1,
-                "nand" => nand += 1,
-                "inv" | "not" => not += 1,
-                "xnor" => xnor += 1,
-                "nimp" => nimp += 1,
-                "nsor" => nsor += 1,
-                _ => panic!("this gate type is not allowed"),
+            match gate.gate_type {
+                GateType::And => and += 1,
+                GateType::Or => or += 1,
+                GateType::Xor => xor += 1,
+                GateType::Nand => nand += 1,
+                GateType::Not => not += 1,
+                GateType::Xnor => xnor += 1,
+                GateType::Nimp => nimp += 1,
+                GateType::Nsor => nsor += 1,
             }
         }
         GateCount {
