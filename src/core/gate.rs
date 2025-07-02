@@ -1,5 +1,5 @@
 use crate::bag::*;
-use crate::core::utils::{LIMB_LEN, N_LIMBS, bit_to_usize, convert_between_blake3_and_normal_form};
+use crate::core::utils::{bit_to_usize, convert_between_blake3_and_normal_form, LIMB_LEN, N_LIMBS};
 use bitvm::{bigint::U256, hash::blake3::blake3_compute_script_with_limb, treepp::*};
 use std::ops::{Add, AddAssign};
 
@@ -13,6 +13,61 @@ pub enum GateType {
     Xnor,
     Nimp,
     Nsor,
+}
+
+impl GateType {
+    pub const fn f(&self) -> fn(bool, bool) -> bool {
+        match self {
+            GateType::And => {
+                fn and(a: bool, b: bool) -> bool {
+                    a & b
+                }
+                and
+            }
+            GateType::Or => {
+                fn or(a: bool, b: bool) -> bool {
+                    a | b
+                }
+                or
+            }
+            GateType::Xor => {
+                fn xor(a: bool, b: bool) -> bool {
+                    a ^ b
+                }
+                xor
+            }
+            GateType::Nand => {
+                fn nand(a: bool, b: bool) -> bool {
+                    !(a & b)
+                }
+                nand
+            }
+            GateType::Not => {
+                fn not(a: bool, _b: bool) -> bool {
+                    !a
+                }
+                not
+            }
+            GateType::Xnor => {
+                fn xnor(a: bool, b: bool) -> bool {
+                    !(a ^ b)
+                }
+                xnor
+            }
+            GateType::Nimp => {
+                fn nimp(a: bool, b: bool) -> bool {
+                    (a) && (!b)
+                }
+                nimp
+            }
+            GateType::Nsor => {
+                fn nsor(a: bool, b: bool) -> bool {
+                    a | (!b)
+                }
+                nsor
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -98,59 +153,6 @@ impl Gate {
         Self::new(wire_a.clone(), wire_b.clone(), wire_c, GateType::Nsor)
     }
 
-    pub fn f(&self) -> fn(bool, bool) -> bool {
-        match self.gate_type {
-            GateType::And => {
-                fn and(a: bool, b: bool) -> bool {
-                    a & b
-                }
-                and
-            }
-            GateType::Or => {
-                fn or(a: bool, b: bool) -> bool {
-                    a | b
-                }
-                or
-            }
-            GateType::Xor => {
-                fn xor(a: bool, b: bool) -> bool {
-                    a ^ b
-                }
-                xor
-            }
-            GateType::Nand => {
-                fn nand(a: bool, b: bool) -> bool {
-                    !(a & b)
-                }
-                nand
-            }
-            GateType::Not => {
-                fn not(a: bool, _b: bool) -> bool {
-                    !a
-                }
-                not
-            }
-            GateType::Xnor => {
-                fn xnor(a: bool, b: bool) -> bool {
-                    !(a ^ b)
-                }
-                xnor
-            }
-            GateType::Nimp => {
-                fn nimp(a: bool, b: bool) -> bool {
-                    (a) && (!b)
-                }
-                nimp
-            }
-            GateType::Nsor => {
-                fn nsor(a: bool, b: bool) -> bool {
-                    a | (!b)
-                }
-                nsor
-            }
-        }
-    }
-
     pub fn evaluation_script(&self) -> Script {
         match self.gate_type {
             GateType::And => script! { OP_BOOLAND },
@@ -165,7 +167,7 @@ impl Gate {
     }
 
     pub fn evaluate(&mut self) {
-        self.wire_c.borrow_mut().set((self.f())(
+        self.wire_c.borrow_mut().set((self.gate_type.f())(
             self.wire_a.borrow().get_value(),
             self.wire_b.borrow().get_value(),
         ));
@@ -175,7 +177,7 @@ impl Gate {
         [(false, false), (true, false), (false, true), (true, true)]
             .iter()
             .map(|(i, j)| {
-                let k = (self.f())(*i, *j);
+                let k = (self.gate_type.f())(*i, *j);
                 let a = self.wire_a.borrow().select(*i);
                 let b = self.wire_b.borrow().select(*j);
                 let c = self.wire_c.borrow().select(k);

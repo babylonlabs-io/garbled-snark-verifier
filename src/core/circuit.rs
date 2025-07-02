@@ -78,7 +78,7 @@ mod tests {
     use crate::core::{bristol::parser, s::S};
     use bitvm::bigint::U256;
     use bitvm::treepp::*;
-    use rand::{Rng, rng};
+    use rand::{rng, Rng};
     use serial_test::serial;
     use std::iter::zip;
 
@@ -111,7 +111,7 @@ mod tests {
             let b = gate.wire_b.borrow().get_label();
             let bit_a = gate.wire_a.borrow().get_value();
             let bit_b = gate.wire_b.borrow().get_value();
-            let bit_c = (gate.f())(bit_a, bit_b);
+            let bit_c = (gate.gate_type.f())(bit_a, bit_b);
             let (garble_check, c) = gate.check_garble(garble.clone(), bit_c);
             let gate_script = gate.script(garble, garble_check);
 
@@ -169,7 +169,7 @@ mod tests {
             let b = gate.wire_b.borrow().get_label();
             let bit_a = gate.wire_a.borrow().get_value();
             let bit_b = gate.wire_b.borrow().get_value();
-            let bit_c = (gate.f())(bit_a, bit_b);
+            let bit_c = (gate.gate_type.f())(bit_a, bit_b);
             let (garble_check, c) = gate.check_garble(garble.clone(), bit_c);
 
             println!(
