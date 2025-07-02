@@ -13,7 +13,7 @@ use ark_std::{
     test_rng,
 };
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 
 use garbled_snark_verifier::circuits::{
     bn254::{fr::Fr, g1::G1Affine, g2::G2Affine},
