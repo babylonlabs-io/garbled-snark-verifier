@@ -48,7 +48,7 @@ impl Circuit {
         let mut xnor = 0;
         let mut nimp = 0;
         let mut nsor = 0;
-        for gate in self.1.clone() {
+        for gate in self.1.iter() {
             match gate.gate_type {
                 GateType::And => and += 1,
                 GateType::Or => or += 1,
