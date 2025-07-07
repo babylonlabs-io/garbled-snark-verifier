@@ -176,20 +176,20 @@ mod tests {
     #[test]
     fn test_g2p_random() {
         let u = G2Projective::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = G2Projective::to_bits(u);
         let v = G2Projective::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 
     #[test]
     fn test_g2a_random() {
         let u = G2Affine::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = G2Affine::to_bits(u);
         let v = G2Affine::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 }

@@ -716,20 +716,20 @@ mod tests {
     #[test]
     fn test_g1a_random() {
         let u = G1Affine::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = G1Affine::to_bits(u);
         let v = G1Affine::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 
     #[test]
     fn test_g1p_random() {
         let u = G1Projective::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = G1Projective::to_bits(u);
         let v = G1Projective::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 

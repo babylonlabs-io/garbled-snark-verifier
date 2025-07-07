@@ -4,11 +4,11 @@ use crate::circuits::bn254::finalexp::{
 };
 use crate::circuits::bn254::fp254impl::Fp254Impl;
 use crate::circuits::bn254::fq::Fq;
-use crate::circuits::bn254::fq2::Fq2;
 use crate::circuits::bn254::fq12::Fq12;
+use crate::circuits::bn254::fq2::Fq2;
 use crate::circuits::bn254::fr::Fr;
 use crate::circuits::bn254::g1::{
-    G1Projective, projective_to_affine_evaluate, projective_to_affine_evaluate_montgomery,
+    projective_to_affine_evaluate, projective_to_affine_evaluate_montgomery, G1Projective,
 };
 use crate::circuits::bn254::pairing::{
     deserialize_compressed_g1_circuit_evaluate, deserialize_compressed_g2_circuit_evaluate,

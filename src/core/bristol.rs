@@ -55,7 +55,7 @@ pub fn parser(filename: &str) -> (Circuit, Vec<Wires>, Vec<Wires>) {
             "inv" | "not" => GateType::Not,
             "xnor" => GateType::Xnor,
             "nimp" => GateType::Nimp,
-            _ => panic!("Unknown gate type: {}", gate_type_str),
+            _ => panic!("Unknown gate type: {gate_type_str}"),
         };
         let gate = Gate::new(
             wires[input_wires[0]].clone(),

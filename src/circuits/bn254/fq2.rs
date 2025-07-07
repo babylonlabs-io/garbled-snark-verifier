@@ -689,10 +689,10 @@ mod tests {
     #[test]
     fn test_fq2_random() {
         let u = Fq2::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = Fq2::to_bits(u);
         let v = Fq2::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 
@@ -994,8 +994,8 @@ mod tests {
         let expected_norm = ark_bn254::Fq::from(r.norm());
 
         let circuit = Fq2::norm_montgomery(
-            Fq::wires_set_montgomery(r.c0.clone()),
-            Fq::wires_set_montgomery(r.c1.clone()),
+            Fq::wires_set_montgomery(r.c0),
+            Fq::wires_set_montgomery(r.c1),
         );
         circuit.gate_counts().print();
         for mut gate in circuit.1 {

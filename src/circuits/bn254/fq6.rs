@@ -906,10 +906,10 @@ mod tests {
     #[test]
     fn test_fq6_random() {
         let u = Fq6::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = Fq6::to_bits(u);
         let v = Fq6::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 

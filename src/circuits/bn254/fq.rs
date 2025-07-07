@@ -161,10 +161,10 @@ mod tests {
     #[test]
     fn test_fq_random() {
         let u = Fq::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = Fq::to_bits(u);
         let v = Fq::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 

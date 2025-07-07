@@ -55,7 +55,7 @@ mod tests {
     use std::iter::zip;
 
     fn test_circuit(circuit_filename: &str, correct: bool) {
-        println!("testing {:?}", circuit_filename);
+        println!("testing {circuit_filename:?}");
         let (circuit, inputs, _outputs) = parser(circuit_filename);
 
         let mut garbled_gates = circuit.garbled_gates();
@@ -113,7 +113,7 @@ mod tests {
     }
 
     fn test_circuit_find_incorrect(circuit_filename: &str, correct: bool) {
-        println!("testing {:?}", circuit_filename);
+        println!("testing {circuit_filename:?}");
         let (circuit, inputs, _outputs) = parser(circuit_filename);
 
         let mut garbled_gates = circuit.garbled_gates();

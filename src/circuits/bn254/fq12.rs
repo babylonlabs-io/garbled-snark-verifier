@@ -805,10 +805,10 @@ mod tests {
     #[test]
     fn test_fq12_random() {
         let u = Fq12::random();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = Fq12::to_bits(u);
         let v = Fq12::from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 

@@ -88,10 +88,10 @@ pub mod tests {
     #[test]
     fn test_random_biguint() {
         let u = random_biguint();
-        println!("u: {:?}", u);
+        println!("u: {u:?}");
         let b = bits_from_biguint(&u);
         let v = biguint_from_bits(b);
-        println!("v: {:?}", v);
+        println!("v: {v:?}");
         assert_eq!(u, v);
     }
 

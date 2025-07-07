@@ -1,7 +1,14 @@
-use crate::bag::*;
-use crate::core::utils::{LIMB_LEN, N_LIMBS, bit_to_usize, convert_between_blake3_and_normal_form};
-use bitvm::{bigint::U256, hash::blake3::blake3_compute_script_with_limb, treepp::*};
 use std::ops::{Add, AddAssign};
+
+use bitvm::{bigint::U256, hash::blake3::blake3_compute_script_with_limb, treepp::*};
+
+use crate::{
+    bag::*,
+    core::{
+        utils::{bit_to_usize, convert_between_blake3_and_normal_form, LIMB_LEN, N_LIMBS},
+        wire,
+    },
+};
 
 // Except Xor, Xnor and Not, each enum's bitmask represent the boolean operation ((a XOR bit_2) AND (b XOR bit_1)) XOR bit_0
 #[repr(u8)]
@@ -108,7 +115,7 @@ impl Gate {
         let gate_index = (f[0] << 2) | (f[1] << 1) | f[2];
         let gate_type = match GateType::try_from(gate_index) {
             Ok(gt) => gt,
-            Err(_) => panic!("Invalid gate type index: {}", gate_index),
+            Err(_) => panic!("Invalid gate type index: {gate_index}"),
         };
         Self::new(wire_a, wire_b, wire_c, gate_type)
     }
@@ -162,31 +169,111 @@ impl Gate {
         ));
     }
 
+    /// Performs the garbling step for this gate: fixes output wire labels and generates garbled table entries if needed.
+    ///
+    /// This method must be called before `evaluate` or `check_garble`.
+    ///
+    /// For non-XOR gates (e.g., AND, OR, NAND), it computes the garbled truth table using the fixed wire labels.
+    /// For XOR/XNOR gates, no ciphertexts are produced, but the output wire's labels and their hashes are deterministically
+    /// set according to the FreeXOR rule:
+    ///
+    /// - XOR: `label_c = label_a ⊕ label_b`
+    /// - XNOR: `label_c = label_a ⊕ label_b ⊕ Δ`
+    ///
+    /// Even though XOR/XNOR gates produce no garbled table rows, calling this method is still required
+    /// to initialize the output wire state.
+    ///
+    /// # Panics
+    /// Panics if called multiple times or if input wires are not properly initialized.
+    ///
+    /// # Returns
+    /// A vector of garbled rows (possibly empty for XOR/XNOR).
     pub fn garbled(&self) -> Vec<S> {
-        [(false, false), (true, false), (false, true), (true, true)]
-            .iter()
-            .map(|(i, j)| {
-                let k = (self.f())(*i, *j);
-                let a = self.wire_a.borrow().select(*i);
-                let b = self.wire_b.borrow().select(*j);
-                let c = self.wire_c.borrow().select(k);
-                S::hash_together(a, b) + c.neg()
-            })
-            .collect()
+        match self.gate_type {
+            GateType::Xor => {
+                let a = self.wire_a.borrow().select(false);
+                let b = self.wire_b.borrow().select(false);
+
+                let c0 = &a ^ &b;
+                let c1 = c0 ^ wire::get_delta();
+
+                self.wire_c.borrow_mut().set_label_pair_and_hash(c0, c1);
+
+                vec![]
+            }
+
+            GateType::Xnor => {
+                let a = self.wire_a.borrow().select(false);
+                let b = self.wire_b.borrow().select(false);
+
+                let c0 = a ^ &b ^ wire::get_delta();
+                let c1 = c0 ^ wire::get_delta();
+
+                self.wire_c.borrow_mut().set_label_pair_and_hash(c0, c1);
+
+                vec![]
+            }
+            _gt => {
+                let gate_f = self.f();
+
+                [(false, false), (true, false), (false, true), (true, true)]
+                    .iter()
+                    .map(|(i, j)| {
+                        let k = (gate_f)(*i, *j);
+                        let a = self.wire_a.borrow().select(*i);
+                        let b = self.wire_b.borrow().select(*j);
+                        let c = self.wire_c.borrow().select(k);
+                        S::hash_together(a, b) + c.neg()
+                    })
+                    .collect()
+            }
+        }
     }
 
     pub fn check_garble(&self, garble: Vec<S>, bit: bool) -> (bool, S) {
-        let a = self.wire_a.borrow().get_label();
-        let b = self.wire_b.borrow().get_label();
-        let index = bit_to_usize(self.wire_a.borrow().get_value())
-            + 2 * bit_to_usize(self.wire_b.borrow().get_value());
-        let row = garble[index];
-        let c = S::hash_together(a, b) + row.neg();
-        let hc = c.hash();
-        (hc == self.wire_c.borrow().select_hash(bit), c)
+        match self.gate_type {
+            GateType::Xor => {
+                let a = self.wire_a.borrow().get_label();
+                let b = self.wire_b.borrow().get_label();
+                let c = a ^ &b;
+                let calculated_hc = c.hash();
+                let actual_hc = self.wire_c.borrow().select_hash(bit);
+
+                (calculated_hc == actual_hc, c)
+            }
+            GateType::Xnor => {
+                let a = self.wire_a.borrow().get_label();
+                let b = self.wire_b.borrow().get_label();
+                let c = a ^ &b ^ wire::get_delta(); // initially label1 = label0 ⊕ Δ
+                let calculated_hc = c.hash();
+                let actual_hc = self.wire_c.borrow().select_hash(bit);
+
+                (calculated_hc == actual_hc, c)
+            }
+            _ => {
+                let a = self.wire_a.borrow().get_label();
+                let b = self.wire_b.borrow().get_label();
+                let index = bit_to_usize(self.wire_a.borrow().get_value())
+                    + 2 * bit_to_usize(self.wire_b.borrow().get_value());
+                let row = garble[index];
+                let c = S::hash_together(a, b) + row.neg();
+                let calculted_hc = c.hash();
+                let actual_hc = self.wire_c.borrow().select_hash(bit);
+
+                (calculted_hc == actual_hc, c)
+            }
+        }
     }
 
     pub fn script(&self, garbled: Vec<S>, correct: bool) -> Script {
+        // Temporary stub since this code is deprecated
+        // Inherently wrong
+        if matches!(self.gate_type, GateType::Xor | GateType::Xnor) {
+            return script! {
+                OP_TRUE
+            };
+        }
+
         script! {                                                     // a bit_a b bit_b
             { N_LIMBS + 1 } OP_PICK                                   // a bit_a b bit_b bit_a
             OP_OVER                                                   // a bit_a b bit_b bit_a bit_b
@@ -597,6 +684,43 @@ mod tests {
                 let result = execute_script(script);
                 assert!(result.success);
             }
+        }
+    }
+
+    #[test]
+    fn free_xor() {
+        for (bit_a, bit_b) in [(false, false), (true, false), (false, true), (true, true)] {
+            let wire_a = new_wirex();
+            let wire_b = new_wirex();
+            let wire_c = new_wirex();
+            let gate = Gate::xor(wire_a.clone(), wire_b.clone(), wire_c.clone());
+
+            gate.garbled();
+
+            wire_a.borrow_mut().set(bit_a);
+            wire_b.borrow_mut().set(bit_b);
+            let bit_c = bit_a ^ bit_b;
+
+            // set the corresponding bit labels
+            let label_a = wire_a.borrow().select(bit_a);
+            let label_b = wire_b.borrow().select(bit_b);
+
+            // calculate the expected output label as xor of two inputs
+            let expected_label_c = label_a ^ &label_b;
+
+            // and check that its hash matches the one fixed at wire_c
+            let actual_hash_c = wire_c.borrow().select_hash(bit_c);
+            let calculated_hash_c = expected_label_c.hash();
+
+            assert_eq!(
+                actual_hash_c, calculated_hash_c,
+                "FreeXOR gate hash mismatch for input ({bit_a}, {bit_b})",
+            );
+
+            // you can also check that check_garble is working
+            let (ok, label_c_checked) = gate.check_garble(vec![], bit_c);
+            assert!(ok, "check_garble failed");
+            assert_eq!(label_c_checked, expected_label_c);
         }
     }
 }

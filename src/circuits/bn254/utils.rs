@@ -52,7 +52,7 @@ pub mod tests {
         );
         assert_eq!((n_p.clone() * modulus.clone()) % r.clone(), BigUint::one());
 
-        println!("modulus inverse: {}\nr_inverse: {}", n_p, r_inv);
+        println!("modulus inverse: {n_p}\nr_inverse: {r_inv}");
 
         assert_eq!(T::montgomery_m_inverse_as_biguint(), n_p);
         assert_eq!(T::montgomery_r_inverse_as_biguint(), r_inv);
