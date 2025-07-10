@@ -4,7 +4,7 @@ use ark_ff::Field;
 use ark_ff::{PrimeField, UniformRand};
 use ark_std::rand::SeedableRng;
 use num_bigint::BigUint;
-use rand::{Rng, rng};
+use rand::{rng, Rng};
 use rand_chacha::ChaCha20Rng;
 use std::str::FromStr;
 
@@ -153,6 +153,8 @@ impl Fq {
 
 #[cfg(test)]
 mod tests {
+    use crate::core::gate::GateType;
+
     use super::*;
     use ark_ff::AdditiveGroup;
     use ark_std::test_rng;
@@ -427,8 +429,10 @@ mod tests {
             let b = ark_bn254::Fq::from(b);
             let expect_a_to_power_of_b = a.pow(b.into_bigint());
 
-            let (c, gc) =
-                Fq::exp_by_constant_montgomery_evaluate(Fq::wires_set_montgomery(a), BigUint::from(b));
+            let (c, gc) = Fq::exp_by_constant_montgomery_evaluate(
+                Fq::wires_set_montgomery(a),
+                BigUint::from(b),
+            );
             gc.print();
             assert_eq!(expect_a_to_power_of_b, Fq::from_montgomery_wires(c));
         };
@@ -444,6 +448,16 @@ mod tests {
         let a = Fq::random();
         let aa = a * a;
         let circuit = Fq::sqrt_montgomery(Fq::wires_set_montgomery(aa));
+
+        // Temporary measure, but xor/xnor gates no longer work without gabbing
+        circuit
+            .1
+            .iter()
+            .filter(|g| matches!(g.gate_type, GateType::Xor | GateType::Xnor))
+            .for_each(|g| {
+                g.garbled();
+            });
+
         circuit.gate_counts().print();
         for mut gate in circuit.1 {
             gate.evaluate();

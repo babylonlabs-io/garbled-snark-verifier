@@ -50,7 +50,7 @@ mod tests {
     use crate::core::{bristol::parser, s::S};
     use bitvm::bigint::U256;
     use bitvm::treepp::*;
-    use rand::{Rng, rng};
+    use rand::{rng, Rng};
     use serial_test::serial;
     use std::iter::zip;
 
