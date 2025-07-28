@@ -15,7 +15,7 @@ use garbled_snark_verifier::circuits::{
     bn254::{fr::Fr, g1::G1Affine, g2::G2Affine},
     groth16::groth16_verifier_evaluate_montgomery,
 };
-use garbled_snark_verifier::core::serialization::{GateWriter, read_gates};
+use garbled_snark_verifier::core::serialization::{read_gates, GateWriter};
 
 #[derive(Copy, Clone)]
 struct DummyCircuit<F: PrimeField> {
@@ -55,17 +55,24 @@ fn main() -> std::io::Result<()> {
     };
     let (pk, vk) = Groth16::<ark_bn254::Bn254>::setup(circuit, &mut rng).unwrap();
     let c = circuit.a.unwrap() * circuit.b.unwrap();
+
     let proof = Groth16::<ark_bn254::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
+
     let public = Fr::wires_set(c);
     let proof_a = G1Affine::wires_set_montgomery(proof.a);
     let proof_b = G2Affine::wires_set_montgomery(proof.b);
     let proof_c = G1Affine::wires_set_montgomery(proof.c);
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("verifier_gates.bin");
+
+    let dir = std::path::Path::new(".");
+    let path = dir.join("verifier_gates.bin");
+
     Circuit::start_gate_recording(&path)?;
+
     let (result, _gc) =
         groth16_verifier_evaluate_montgomery(public, proof_a, proof_b, proof_c, vk, false);
+
     Circuit::finish_gate_recording()?;
+
     println!("Verification result: {}", result.borrow().get_value());
     let records = read_gates(&path)?;
     println!("Stored {} gate records", records.len());
