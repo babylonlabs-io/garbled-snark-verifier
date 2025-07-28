@@ -1,5 +1,13 @@
+use once_cell::sync::Lazy;
+
 use crate::{bag::*, core::utils::bit_to_usize};
-use std::ops::{Add, AddAssign};
+use std::{
+    ops::{Add, AddAssign},
+    sync::atomic::AtomicU64,
+};
+
+pub static GATE_EVALUTE_COUNTER: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
+pub static GATE_GARBLE_COUNTER: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(0));
 
 // Except Xor, Xnor and Not, each enum's bitmask represent the boolean operation ((a XOR bit_2) AND (b XOR bit_1)) XOR bit_0
 #[repr(u8)]
@@ -137,9 +145,12 @@ impl Gate {
             self.wire_a.borrow().get_value(),
             self.wire_b.borrow().get_value(),
         ));
+        GATE_EVALUTE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn garbled(&self) -> Vec<S> {
+        GATE_GARBLE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         [(false, false), (true, false), (false, true), (true, true)]
             .iter()
             .map(|(i, j)| {

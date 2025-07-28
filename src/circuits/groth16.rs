@@ -213,6 +213,11 @@ mod tests {
             groth16_verifier_evaluate_montgomery(public, proof_a, proof_b, proof_c, vk, false);
         gate_count.print();
         assert!(result.borrow().get_value());
+        panic!(
+            "Evalute: {:?}, Garble: {:?}",
+            crate::core::gate::GATE_EVALUTE_COUNTER,
+            crate::core::gate::GATE_GARBLE_COUNTER
+        );
     }
 
     #[test]
@@ -259,5 +264,11 @@ mod tests {
             groth16_verifier_evaluate_montgomery(public, proof_a, proof_b, proof_c, vk, true);
         gate_count.print();
         assert!(result.borrow().get_value());
+
+        panic!(
+            "Evalute: {:?}, Garble: {:?}",
+            crate::core::gate::GATE_EVALUTE_COUNTER,
+            crate::core::gate::GATE_GARBLE_COUNTER
+        );
     }
 }
