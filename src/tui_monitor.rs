@@ -216,16 +216,22 @@ impl TuiApp {
                             format!("T{}: ERROR - {}", thread.thread_id, error_msg)
                         } else if thread.status == ThreadStatus::Finished {
                             // For finished threads, show only hashes (no speed/timer updates)
-                            let hash_display = if let Some(ref hash) = thread.input_hash160 {
-                                format!("Input: {}...", &hash[0..8.min(hash.len())])
+                            let input_hash_display = if let Some(ref hash) = thread.input_hash160 {
+                                format!("In: {}...", &hash[0..8.min(hash.len())])
                             } else {
-                                "Input: N/A".to_string()
+                                "In: N/A".to_string()
                             };
-                            // TODO: Add output hash when available from ProcessMonitor
+                            let output_hash_display = if let Some(ref hash) = thread.output_hash160 {
+                                format!("Out: {}...", &hash[0..8.min(hash.len())])
+                            } else {
+                                "Out: N/A".to_string()
+                            };
                             format!(
-                                "T{}: COMPLETED | {} | Runtime: {}",
+                                "T{} (seed:{}): COMPLETED | {} | {} | Runtime: {}",
                                 thread.thread_id,
-                                hash_display,
+                                thread.seed,
+                                input_hash_display,
+                                output_hash_display,
                                 format_duration(thread.duration)
                             )
                         } else {
@@ -237,8 +243,9 @@ impl TuiApp {
                                 String::new()
                             };
                             format!(
-                                "T{}: {} {:.1}% | {:.2}M g/s | {} | {}M gates{}",
+                                "T{} (seed:{}): {} {:.1}% | {:.2}M g/s | {} | {}M gates{}",
                                 thread.thread_id,
+                                thread.seed,
                                 progress_bar,
                                 thread.progress_percent,
                                 thread.gates_per_second / 1_000_000.0,

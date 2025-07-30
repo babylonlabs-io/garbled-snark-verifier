@@ -26,6 +26,7 @@ pub enum ThreadStatus {
 #[derive(Debug, Clone)]
 pub struct ThreadMetrics {
     pub thread_id: usize,
+    pub seed: u64,
     pub current_gate: Arc<AtomicUsize>,
     pub total_gates: usize,
     pub gates_per_second: f64,
@@ -37,6 +38,7 @@ pub struct ThreadMetrics {
     pub speed_history: VecDeque<f64>,
     pub error_message: Option<String>,
     pub input_hash160: Option<String>,
+    pub output_hash160: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -127,11 +129,12 @@ impl ProcessMonitor {
         })
     }
 
-    pub fn register_thread(&self, thread_id: usize, total_gates: usize) -> Arc<AtomicUsize> {
+    pub fn register_thread(&self, thread_id: usize, seed: u64, total_gates: usize) -> Arc<AtomicUsize> {
         let gate_counter = Arc::new(AtomicUsize::new(0));
 
         let thread_metrics = ThreadMetrics {
             thread_id,
+            seed,
             current_gate: Arc::clone(&gate_counter),
             total_gates,
             gates_per_second: 0.0,
@@ -143,6 +146,7 @@ impl ProcessMonitor {
             speed_history: VecDeque::with_capacity(60), // Keep 1 minute of history
             error_message: None,
             input_hash160: None,
+            output_hash160: None,
         };
 
         self.threads
@@ -192,6 +196,12 @@ impl ProcessMonitor {
     pub fn update_thread_hash160(&self, thread_id: usize, hash160: String) {
         if let Some(thread) = self.threads.lock().unwrap().get_mut(&thread_id) {
             thread.input_hash160 = Some(hash160);
+        }
+    }
+
+    pub fn update_thread_output_hash160(&self, thread_id: usize, output_hash160: String) {
+        if let Some(thread) = self.threads.lock().unwrap().get_mut(&thread_id) {
+            thread.output_hash160 = Some(output_hash160);
         }
     }
 
@@ -327,6 +337,7 @@ impl ProcessMonitor {
 
             thread_snapshots.push(ThreadSnapshot {
                 thread_id: thread.thread_id,
+                seed: thread.seed,
                 current_gate,
                 total_gates: thread.total_gates,
                 gates_per_second: speed,
@@ -345,11 +356,12 @@ impl ProcessMonitor {
                 },
                 error_message: thread.error_message.clone(),
                 input_hash160: thread.input_hash160.clone(),
+                output_hash160: thread.output_hash160.clone(),
             });
         }
 
-        // Sort threads by ID for consistent display (done once here instead of in TUI)
-        thread_snapshots.sort_by_key(|t| t.thread_id);
+        // Sort threads by seed for consistent display (done once here instead of in TUI)
+        thread_snapshots.sort_by_key(|t| t.seed);
 
         // Calculate aggregate metrics
         let total_gates_processed: usize = thread_snapshots.iter().map(|t| t.current_gate).sum();
@@ -375,6 +387,7 @@ impl ProcessMonitor {
 #[derive(Debug, Clone)]
 pub struct ThreadSnapshot {
     pub thread_id: usize,
+    pub seed: u64,
     pub current_gate: usize,
     pub total_gates: usize,
     pub gates_per_second: f64,
@@ -384,6 +397,7 @@ pub struct ThreadSnapshot {
     pub progress_percent: f64,
     pub error_message: Option<String>,
     pub input_hash160: Option<String>,
+    pub output_hash160: Option<String>,
 }
 
 #[derive(Debug, Clone)]

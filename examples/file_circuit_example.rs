@@ -24,8 +24,7 @@ use garbled_snark_verifier::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+// std::hash traits used with full paths to avoid conflicts
 
 // Include wire values generated from main branch
 include!("../wire_values.rs");
@@ -55,7 +54,7 @@ fn create_proof_input_handler() -> Box<dyn Fn(WireId) -> Option<bool>> {
     Box::new(move |wire_id| wire_values.get(&wire_id).copied())
 }
 
-type DefaultHasher = blake3::Hasher;
+type GarblingHasher = blake3::Hasher;
 
 #[derive(Serialize, Deserialize)]
 struct LabelPair([u8; 16], [u8; 16]);
@@ -151,6 +150,7 @@ fn calculate_max_workers_by_virtual_memory(
 #[derive(Clone)]
 struct TaskConfig {
     task_id: usize,
+    seed: u64,
     circuit_file_path: String,
     input_wires: Vec<WireId>,
     output_wires: Vec<WireId>,
@@ -260,16 +260,16 @@ fn create_circuit_fingerprint(
     };
 
     // Create hash of all fields except the hash itself
-    let mut hasher = DefaultHasher::new();
-    fingerprint.circuit_file_path.hash(&mut hasher);
-    fingerprint.circuit_file_size.hash(&mut hasher);
-    fingerprint.circuit_file_modified.hash(&mut hasher);
-    fingerprint.num_wire.hash(&mut hasher);
-    fingerprint.input_wire_count.hash(&mut hasher);
-    fingerprint.output_wire_count.hash(&mut hasher);
-    fingerprint.total_gates.hash(&mut hasher);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&fingerprint.circuit_file_path, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.circuit_file_size, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.circuit_file_modified, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.num_wire, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.input_wire_count, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.output_wire_count, &mut hasher);
+    std::hash::Hash::hash(&fingerprint.total_gates, &mut hasher);
 
-    let fingerprint_hash = hasher.finish();
+    let fingerprint_hash = std::hash::Hasher::finish(&hasher);
 
     Ok(CircuitFingerprint {
         fingerprint_hash,
@@ -468,6 +468,7 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
         if !completed_tasks.contains(&task_id) {
             pending_tasks.push_back(TaskConfig {
                 task_id,
+                seed: task_id as u64,
                 circuit_file_path: circuit_file_path.to_string(),
                 input_wires: circuit_template.input_wires.clone(),
                 output_wires: circuit_template.output_wires.clone(),
@@ -647,7 +648,7 @@ fn spawn_worker_task<H: digest::Digest + Default + Clone>(
 ) -> thread::JoinHandle<Result<ThreadStats, CircuitError>> {
     thread::spawn(move || {
         let start_time = Instant::now();
-        let mut rng = ChaCha8Rng::seed_from_u64(task.task_id as u64);
+        let mut rng = ChaCha8Rng::seed_from_u64(task.seed);
 
         // Create a new FileGateProvider for this thread first to get gate count
         let file_gate_provider = match FileGateProvider::new(&task.circuit_file_path) {
@@ -670,7 +671,7 @@ fn spawn_worker_task<H: digest::Digest + Default + Clone>(
         let gate_counter = if let Some(monitor) = ProcessMonitor::instance() {
             if let Ok(guard) = monitor.lock() {
                 guard.update_thread_status(task.task_id, ThreadStatus::Starting);
-                Some(guard.register_thread(task.task_id, total_gates))
+                Some(guard.register_thread(task.task_id, task.seed, total_gates))
             } else {
                 None
             }
@@ -933,9 +934,19 @@ fn garble_with_streaming_thread<H: digest::Digest + Default + Clone, G: GateProv
         }
     }
 
-    // TODO reflect in TUI for finished threads
-    let _output_hash =
+    // Calculate output hash for TUI display
+    let output_hash =
         <bitcoin::hashes::hash160::Hash as bitcoin::hashes::Hash>::hash(&all_output_bytes);
+    let output_hash_str = format!("{output_hash}");
+
+    // Update ProcessMonitor with output hash if thread_id is available
+    if let Some(tid) = thread_id {
+        if let Some(monitor) = ProcessMonitor::instance() {
+            if let Ok(guard) = monitor.lock() {
+                guard.update_thread_output_hash160(tid, output_hash_str.clone());
+            }
+        }
+    }
 
     if let Some(ref save_dir) = save_dir {
         // Save output labels
@@ -1158,7 +1169,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //println!("  Final memory usage: {final_mem_info}");
 
     println!("\nTesting multiple parallel garbling...");
-    match run_multiple_garbling::<DefaultHasher>(
+    match run_multiple_garbling::<GarblingHasher>(
         &circuit_file_path,
         &file_circuit,
         num_of_garbling,
