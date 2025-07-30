@@ -197,6 +197,7 @@ impl TuiApp {
             if snap.threads.is_empty() {
                 vec![ListItem::new("No worker threads detected")]
             } else {
+                // Threads are already sorted by ProcessMonitor for performance
                 snap.threads
                     .iter()
                     .map(|thread| {
@@ -213,8 +214,22 @@ impl TuiApp {
                             let error_msg =
                                 thread.error_message.as_deref().unwrap_or("Unknown error");
                             format!("T{}: ERROR - {}", thread.thread_id, error_msg)
+                        } else if thread.status == ThreadStatus::Finished {
+                            // For finished threads, show only hashes (no speed/timer updates)
+                            let hash_display = if let Some(ref hash) = thread.input_hash160 {
+                                format!("Input: {}...", &hash[0..8.min(hash.len())])
+                            } else {
+                                "Input: N/A".to_string()
+                            };
+                            // TODO: Add output hash when available from ProcessMonitor
+                            format!(
+                                "T{}: COMPLETED | {} | Runtime: {}",
+                                thread.thread_id,
+                                hash_display,
+                                format_duration(thread.duration)
+                            )
                         } else {
-                            // Normal progress display - no per-thread memory, show global info
+                            // Normal progress display for active threads
                             let progress_bar = create_progress_bar(thread.progress_percent, 10);
                             let hash_display = if let Some(ref hash) = thread.input_hash160 {
                                 format!(" | Hash: {}...", &hash[0..8.min(hash.len())])

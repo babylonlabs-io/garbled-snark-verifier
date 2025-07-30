@@ -316,7 +316,10 @@ impl ProcessMonitor {
         for (_, thread) in threads.iter() {
             let current_gate = thread.current_gate.load(Ordering::Relaxed);
             let elapsed = thread.start_time.elapsed().as_secs_f64();
-            let speed = if elapsed > 0.0 {
+            // Don't calculate ongoing speed for finished/error threads
+            let speed = if thread.status == ThreadStatus::Finished || thread.status == ThreadStatus::Error {
+                0.0 // Stop calculating speed for completed threads
+            } else if elapsed > 0.0 {
                 current_gate as f64 / elapsed
             } else {
                 0.0
@@ -329,7 +332,12 @@ impl ProcessMonitor {
                 gates_per_second: speed,
                 memory_usage_gb: thread.memory_usage_gb,
                 status: thread.status,
-                duration: thread.start_time.elapsed(),
+                // Use fixed duration for finished threads, live duration for active ones
+                duration: if thread.status == ThreadStatus::Finished || thread.status == ThreadStatus::Error {
+                    thread.duration // Use the fixed duration when thread finished
+                } else {
+                    thread.start_time.elapsed() // Live duration for active threads
+                },
                 progress_percent: if thread.total_gates > 0 {
                     (current_gate as f64 / thread.total_gates as f64) * 100.0
                 } else {
@@ -339,6 +347,9 @@ impl ProcessMonitor {
                 input_hash160: thread.input_hash160.clone(),
             });
         }
+
+        // Sort threads by ID for consistent display (done once here instead of in TUI)
+        thread_snapshots.sort_by_key(|t| t.thread_id);
 
         // Calculate aggregate metrics
         let total_gates_processed: usize = thread_snapshots.iter().map(|t| t.current_gate).sum();

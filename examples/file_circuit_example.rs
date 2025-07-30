@@ -24,6 +24,8 @@ use garbled_snark_verifier::{
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 // Include wire values generated from main branch
 include!("../wire_values.rs");
@@ -57,6 +59,28 @@ type DefaultHasher = blake3::Hasher;
 
 #[derive(Serialize, Deserialize)]
 struct LabelPair([u8; 16], [u8; 16]);
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct CircuitFingerprint {
+    circuit_file_path: String,
+    circuit_file_size: u64,
+    circuit_file_modified: u64, // Unix timestamp
+    num_wire: usize,
+    input_wire_count: usize,
+    output_wire_count: usize,
+    total_gates: usize,
+    fingerprint_hash: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CompletionMetadata {
+    circuit_fingerprint: CircuitFingerprint,
+    completion_time: u64, // Unix timestamp
+    task_id: usize,
+    gates_processed: usize,
+    duration_seconds: f64,
+    success: bool,
+}
 
 #[derive(Deserialize)]
 struct Config {
@@ -133,6 +157,7 @@ struct TaskConfig {
     num_wire: usize,
     timestamped_save_path: String,
     should_save_ciphertexts: bool,
+    circuit_fingerprint: CircuitFingerprint,
 }
 
 fn spawn_progress_monitor(
@@ -212,6 +237,154 @@ fn spawn_progress_monitor(
     })
 }
 
+fn create_circuit_fingerprint(
+    circuit_file_path: &str,
+    circuit_template: &Circuit<FileGateProvider>,
+) -> Result<CircuitFingerprint, Box<dyn std::error::Error>> {
+    let circuit_metadata = fs::metadata(circuit_file_path)?;
+    let circuit_file_size = circuit_metadata.len();
+    let circuit_file_modified = circuit_metadata
+        .modified()?
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    let fingerprint = CircuitFingerprint {
+        circuit_file_path: circuit_file_path.to_string(),
+        circuit_file_size,
+        circuit_file_modified,
+        num_wire: circuit_template.num_wire,
+        input_wire_count: circuit_template.input_wires.len(),
+        output_wire_count: circuit_template.output_wires.len(),
+        total_gates: circuit_template.gates.gate_count().unwrap_or(0),
+        fingerprint_hash: 0, // Will be calculated below
+    };
+
+    // Create hash of all fields except the hash itself
+    let mut hasher = DefaultHasher::new();
+    fingerprint.circuit_file_path.hash(&mut hasher);
+    fingerprint.circuit_file_size.hash(&mut hasher);
+    fingerprint.circuit_file_modified.hash(&mut hasher);
+    fingerprint.num_wire.hash(&mut hasher);
+    fingerprint.input_wire_count.hash(&mut hasher);
+    fingerprint.output_wire_count.hash(&mut hasher);
+    fingerprint.total_gates.hash(&mut hasher);
+
+    let fingerprint_hash = hasher.finish();
+
+    Ok(CircuitFingerprint {
+        fingerprint_hash,
+        ..fingerprint
+    })
+}
+
+fn check_completed_garblings(
+    save_path: &str,
+    num_of_garbling: usize,
+    expected_fingerprint: &CircuitFingerprint,
+) -> Vec<usize> {
+    let mut completed_tasks = Vec::new();
+    
+    // Check all existing timestamp directories, not just the current one
+    match fs::read_dir(save_path) {
+        Ok(entries) => {
+            for entry in entries {
+                match entry {
+                    Ok(entry) if entry.path().is_dir() => {
+                        let timestamp_dir = entry.path();
+                        
+                        // Check each task in this timestamp directory
+                        for task_id in 0..num_of_garbling {
+                            if completed_tasks.contains(&task_id) {
+                                continue; // Already found this task completed
+                            }
+                    
+                            let completion_metadata_path = timestamp_dir.join(format!("{}/completion_metadata.json", task_id));
+                            let output_labels_path = timestamp_dir.join(format!("{}/output_labels.json", task_id));
+                            let input_labels_path = timestamp_dir.join(format!("{}/inputs_labels.json", task_id));
+                            let ciphertext_hash_path = timestamp_dir.join(format!("{}/ciphertext_hash.bin", task_id));
+                            
+                            // Check if all completion files exist
+                            if completion_metadata_path.exists() && output_labels_path.exists() && 
+                               input_labels_path.exists() && ciphertext_hash_path.exists() {
+                                
+                                // Validate completion metadata and circuit compatibility
+                                match fs::read_to_string(&completion_metadata_path) {
+                                    Ok(metadata_content) => {
+                                        match serde_json::from_str::<CompletionMetadata>(&metadata_content) {
+                                            Ok(metadata) => {
+                                                // Check if circuit fingerprint matches current configuration
+                                                if metadata.circuit_fingerprint.fingerprint_hash == expected_fingerprint.fingerprint_hash
+                                                    && metadata.success {
+                                                    
+                                                    // Additional validation - check output labels file is valid
+                                                    match fs::read_to_string(&output_labels_path) {
+                                                        Ok(labels_content) => {
+                                                            match serde_json::from_str::<serde_json::Value>(&labels_content) {
+                                                                Ok(json) if json.is_array() && !json.as_array().unwrap().is_empty() => {
+                                                                    completed_tasks.push(task_id);
+                                                                    println!("✓ Task {} compatible and complete (circuit hash: {})", 
+                                                                            task_id, metadata.circuit_fingerprint.fingerprint_hash);
+                                                                }
+                                                                _ => {
+                                                                    println!("⚠ Task {} output labels file invalid or empty", task_id);
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            println!("⚠ Task {} output labels file unreadable: {}", task_id, e);
+                                                        }
+                                                    }
+                                                } else {
+                                                    println!("⚠ Task {} found but incompatible (circuit hash mismatch: {} vs {})", 
+                                                            task_id, 
+                                                            metadata.circuit_fingerprint.fingerprint_hash,
+                                                            expected_fingerprint.fingerprint_hash);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                println!("⚠ Task {} completion metadata file corrupted: {}", task_id, e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("⚠ Task {} completion metadata file unreadable: {}", task_id, e);
+                                    }
+                                }
+                            } else {
+                                // Missing some completion files - skip this task
+                                if completion_metadata_path.exists() || output_labels_path.exists() || 
+                                   input_labels_path.exists() || ciphertext_hash_path.exists() {
+                                    println!("⚠ Task {} has partial completion files - will reprocess", task_id);
+                                }
+                            }
+                        }
+                    }
+                    Ok(_) => {
+                        // Non-directory entry, skip
+                    }
+                    Err(e) => {
+                        println!("⚠ Error reading directory entry: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            println!("⚠ Cannot read save directory {}: {} - assuming no completed tasks", save_path, e);
+        }
+    }
+    
+    if !completed_tasks.is_empty() {
+        completed_tasks.sort(); // Sort for consistent output
+        println!(
+            "Found {} already completed garbling tasks: {:?}",
+            completed_tasks.len(),
+            completed_tasks
+        );
+    }
+    
+    completed_tasks
+}
+
 fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
     circuit_file_path: &str,
     circuit_template: &Circuit<FileGateProvider>,
@@ -256,35 +429,63 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
     println!("Total virtual memory (RAM + Swap): {total_virtual_gb:.2}GB");
     println!("Available virtual memory: {available_virtual_gb:.2}GB");
 
-    // Calculate initial number of workers we can start
-    let initial_workers = calculate_max_workers_by_virtual_memory(
+    // Calculate initial number of workers we can start based on memory capacity
+    let max_concurrent_workers = calculate_max_workers_by_virtual_memory(
         available_virtual_gb,
         worker_memory_gb,
         num_of_garbling,
     );
 
-    println!("Starting with {initial_workers} workers (limited by memory)");
+    println!("Memory capacity allows for maximum {max_concurrent_workers} concurrent workers");
+    println!("Starting with {max_concurrent_workers} workers initially");
+
+    // Create circuit fingerprint for compatibility checking
+    let circuit_fingerprint = create_circuit_fingerprint(circuit_file_path, circuit_template)
+        .map_err(|e| CircuitError::GarblingFailed(format!("Failed to create circuit fingerprint: {}", e)))?;
+    
+    println!("Circuit fingerprint: {} (hash: {})", 
+             circuit_fingerprint.circuit_file_path, 
+             circuit_fingerprint.fingerprint_hash);
+
+    // Check for already completed garbling tasks
+    let completed_tasks = check_completed_garblings(save_path, num_of_garbling, &circuit_fingerprint);
+    let remaining_tasks = num_of_garbling - completed_tasks.len();
+    
+    println!("Tasks already completed: {}", completed_tasks.len());
+    println!("Tasks remaining to process: {}", remaining_tasks);
 
     ProcessMonitor::initialize(
         circuit_info,
         timestamp_dir.clone(),
         initial_memory_gb,
-        initial_workers,
-        num_of_garbling,
+        max_concurrent_workers,
+        remaining_tasks, // Use remaining tasks, not total
     );
 
-    // Create task queue with all remaining tasks
+    // Create task queue with only remaining (uncompleted) tasks
     let mut pending_tasks = VecDeque::new();
     for task_id in 0..num_of_garbling {
-        pending_tasks.push_back(TaskConfig {
-            task_id,
-            circuit_file_path: circuit_file_path.to_string(),
-            input_wires: circuit_template.input_wires.clone(),
-            output_wires: circuit_template.output_wires.clone(),
-            num_wire: circuit_template.num_wire,
-            timestamped_save_path: timestamp_dir.clone(),
-            should_save_ciphertexts: save_ciphertext_ids.contains(&task_id),
-        });
+        if !completed_tasks.contains(&task_id) {
+            pending_tasks.push_back(TaskConfig {
+                task_id,
+                circuit_file_path: circuit_file_path.to_string(),
+                input_wires: circuit_template.input_wires.clone(),
+                output_wires: circuit_template.output_wires.clone(),
+                num_wire: circuit_template.num_wire,
+                timestamped_save_path: timestamp_dir.clone(),
+                should_save_ciphertexts: save_ciphertext_ids.contains(&task_id),
+                circuit_fingerprint: circuit_fingerprint.clone(),
+            });
+        }
+    }
+
+    // Mark already completed tasks in ProcessMonitor
+    if let Some(monitor) = ProcessMonitor::instance() {
+        if let Ok(guard) = monitor.lock() {
+            for _ in 0..completed_tasks.len() {
+                guard.mark_task_completed();
+            }
+        }
     }
 
     let pending_tasks = Arc::new(Mutex::new(pending_tasks));
@@ -296,8 +497,9 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
         println!();
     }
 
-    // Start initial workers
-    for _ in 0..initial_workers {
+    // Start initial workers up to memory capacity
+    let initial_workers_to_start = max_concurrent_workers.min(pending_tasks.lock().unwrap().len());
+    for _ in 0..initial_workers_to_start {
         if let Some(task) = pending_tasks.lock().unwrap().pop_front() {
             let handle = spawn_worker_task::<H>(task, Arc::clone(&completed_results));
             active_workers.lock().unwrap().push(handle);
@@ -316,28 +518,36 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
     let active_workers_clone = Arc::clone(&active_workers);
     let completed_results_clone = Arc::clone(&completed_results);
 
+    let mut metrics_update_counter = 0;
+    let metrics_update_interval = (memory_check_interval.as_millis() / 200).max(1) as usize; // Update metrics less frequently
+
     loop {
-        thread::sleep(memory_check_interval);
+        // Use shorter intervals for more responsive worker management
+        thread::sleep(Duration::from_millis(200)); // Much faster than the memory_check_interval
+        metrics_update_counter += 1;
 
-        // Update system metrics
-        if let Some((total_gb, available_gb)) = get_system_memory_info() {
-            // Get REAL current process memory usage from system
-            let process_memory_gb = if let Some(usage) = memory_stats::memory_stats() {
-                usage.virtual_mem as f64 / 1024.0 / 1024.0 / 1024.0
-            } else {
-                0.0 // If can't get real measurement, show 0 instead of fake calculations
-            };
+        // Update system metrics only periodically to reduce overhead
+        if metrics_update_counter >= metrics_update_interval {
+            metrics_update_counter = 0;
+            if let Some((total_gb, available_gb)) = get_system_memory_info() {
+                // Get REAL current process memory usage from system
+                let process_memory_gb = if let Some(usage) = memory_stats::memory_stats() {
+                    usage.virtual_mem as f64 / 1024.0 / 1024.0 / 1024.0
+                } else {
+                    0.0 // If can't get real measurement, show 0 instead of fake calculations
+                };
 
-            if let Some(monitor) = ProcessMonitor::instance()
-                && let Ok(guard) = monitor.lock()
-            {
-                guard.update_system_metrics(
-                    total_gb,
-                    available_gb,
-                    process_memory_gb,
-                    pending_tasks_clone.lock().unwrap().len(),
-                );
-                guard.update_storage_metrics();
+                if let Some(monitor) = ProcessMonitor::instance()
+                    && let Ok(guard) = monitor.lock()
+                {
+                    guard.update_system_metrics(
+                        total_gb,
+                        available_gb,
+                        process_memory_gb,
+                        pending_tasks_clone.lock().unwrap().len(),
+                    );
+                    guard.update_storage_metrics();
+                }
             }
         }
 
@@ -392,18 +602,18 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
             break; // All tasks completed
         }
 
-        if pending_count > 0
-            && let Some((_, current_available_gb)) = get_system_memory_info()
-        {
-            let max_new_workers = calculate_max_workers_by_virtual_memory(
-                current_available_gb,
-                worker_memory_gb,
-                pending_count,
-            );
+        // Start new workers immediately up to our fixed capacity when slots become available
+        // Lock both collections together to prevent race conditions
+        if pending_count > 0 && active_count < max_concurrent_workers {
+            let workers_to_start = (max_concurrent_workers - active_count).min(pending_count);
 
-            let workers_to_start = max_new_workers.saturating_sub(active_count);
-
+            // Start workers one by one, checking capacity each time to prevent overshooting
             for _ in 0..workers_to_start {
+                // Double-check we haven't exceeded capacity before spawning
+                if workers.len() >= max_concurrent_workers {
+                    break;
+                }
+                
                 if let Some(task) = pending_tasks_clone.lock().unwrap().pop_front() {
                     let handle = spawn_worker_task::<H>(task, Arc::clone(&completed_results_clone));
                     workers.push(handle);
@@ -417,11 +627,16 @@ fn run_multiple_garbling<H: digest::Digest + Default + Clone>(
     // Wait for TUI to finish (user pressed 'q')
     let _ = tui_handle.join();
 
-    // Extract final results
+    // Extract final results (only actual worker results, no synthetic data)
     let results = Arc::try_unwrap(completed_results)
         .map_err(|_| CircuitError::GarblingFailed("Failed to extract results".to_string()))?
         .into_inner()
         .map_err(|_| CircuitError::GarblingFailed("Failed to unlock results".to_string()))?;
+
+    println!("\n=== Completion Summary ===");
+    println!("Pre-completed tasks: {} (skipped)", completed_tasks.len());
+    println!("Newly completed tasks: {} (executed)", results.len());
+    println!("Total tasks: {}", completed_tasks.len() + results.len());
 
     Ok(results)
 }
@@ -486,6 +701,7 @@ fn spawn_worker_task<H: digest::Digest + Default + Clone>(
             &task.timestamped_save_path,
             task.should_save_ciphertexts,
             gate_counter,
+            &task.circuit_fingerprint,
         ) {
             Ok((_, xor_result)) => {
                 let duration = start_time.elapsed();
@@ -544,6 +760,7 @@ fn garble_with_streaming_thread<H: digest::Digest + Default + Clone, G: GateProv
     save_path: &str,
     should_save_ciphertexts: bool,
     external_gate_counter: Option<Arc<AtomicUsize>>,
+    circuit_fingerprint: &CircuitFingerprint,
 ) -> Result<(GarbledWires, S), CircuitError> {
     // Create save directory if needed
     let save_dir = if !save_path.is_empty() && thread_id.is_some() {
@@ -745,6 +962,31 @@ fn garble_with_streaming_thread<H: digest::Digest + Default + Clone, G: GateProv
                 "Failed to write ciphertext hash to {hash_path}: {e}"
             ))
         })?;
+
+        // Save completion metadata
+        if let Some(task_id) = thread_id {
+            let completion_metadata = CompletionMetadata {
+                circuit_fingerprint: circuit_fingerprint.clone(),
+                completion_time: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+                task_id,
+                gates_processed: circuit.gates.gate_count().unwrap_or(0),
+                duration_seconds: 0.0, // Will be updated by caller
+                success: true,
+            };
+
+            let metadata_path = format!("{save_dir}/completion_metadata.json");
+            let metadata_json = serde_json::to_string_pretty(&completion_metadata).map_err(|e| {
+                CircuitError::GarblingFailed(format!("Failed to serialize completion metadata: {e}"))
+            })?;
+            fs::write(&metadata_path, metadata_json).map_err(|e| {
+                CircuitError::GarblingFailed(format!(
+                    "Failed to write completion metadata to {metadata_path}: {e}"
+                ))
+            })?;
+        }
     }
 
     Ok((wires, xor_result))
@@ -927,41 +1169,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ) {
         Ok(results) => {
             println!(
-                "All {} garbling threads completed successfully!",
+                "\n🎉 Garbling process completed successfully!"
+            );
+            println!(
+                "Executed {} new garbling tasks (others were pre-completed)",
                 results.len()
             );
 
-            let total_gates: usize = results.iter().map(|r| r.gates_processed).sum();
-            let total_duration = results
-                .iter()
-                .map(|r| r.duration)
-                .max()
-                .unwrap_or(Duration::ZERO);
-            let avg_gates_per_sec = if total_duration.as_secs_f64() > 0.0 {
-                total_gates as f64 / total_duration.as_secs_f64()
-            } else {
-                0.0
-            };
-
-            println!("\nAggregate Statistics:");
-            println!("  Total gates processed: {total_gates}");
-            println!("  Total time: {:.2}s", total_duration.as_secs_f64());
-            println!("  Average throughput: {avg_gates_per_sec:.0} gates/s");
-
-            println!("\nPer-thread Statistics:");
-            for stats in &results {
-                let gates_per_sec = if stats.duration.as_secs_f64() > 0.0 {
-                    stats.gates_processed as f64 / stats.duration.as_secs_f64()
+            if !results.is_empty() {
+                let total_gates: usize = results.iter().map(|r| r.gates_processed).sum();
+                let total_duration = results
+                    .iter()
+                    .map(|r| r.duration)
+                    .max()
+                    .unwrap_or(Duration::ZERO);
+                let avg_gates_per_sec = if total_duration.as_secs_f64() > 0.0 {
+                    total_gates as f64 / total_duration.as_secs_f64()
                 } else {
                     0.0
                 };
-                println!(
-                    "  Thread {}: {} gates in {:.2}s ({:.0} gates/s)",
-                    stats.thread_id,
-                    stats.gates_processed,
-                    stats.duration.as_secs_f64(),
-                    gates_per_sec
-                );
+
+                println!("\nAggregate Statistics (New Tasks Only):");
+                println!("  Total gates processed: {total_gates}");
+                println!("  Total time: {:.2}s", total_duration.as_secs_f64());
+                println!("  Average throughput: {avg_gates_per_sec:.0} gates/s");
+
+                println!("\nPer-thread Statistics:");
+                for stats in &results {
+                    let gates_per_sec = if stats.duration.as_secs_f64() > 0.0 {
+                        stats.gates_processed as f64 / stats.duration.as_secs_f64()
+                    } else {
+                        0.0
+                    };
+                    println!(
+                        "  Thread {}: {} gates in {:.2}s ({:.0} gates/s)",
+                        stats.thread_id,
+                        stats.gates_processed,
+                        stats.duration.as_secs_f64(),
+                        gates_per_sec
+                    );
+                }
+            } else {
+                println!("No new tasks were executed - all tasks were already completed!");
             }
         }
         Err(e) => {
