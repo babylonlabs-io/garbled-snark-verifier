@@ -49,6 +49,54 @@ mod aes_hash {
         }
     }
 
+    /// Optimized dual-hash for half-garbling: compute both h_a0 and h_a1 simultaneously
+    /// This is specifically optimized for the garbling pattern where we need:
+    /// h_a0 = hash(a.select(alpha_a), gate_id) 
+    /// h_a1 = hash(a.select(!alpha_a), gate_id)
+    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+    #[target_feature(enable = "aes,sse2")]
+    pub unsafe fn aes_hash_dual_simd(
+        a_label0: &[u8; 16],  // a.label0
+        a_label1: &[u8; 16],  // a.label1 (= a.label0 ^ delta)
+        gate_id: u64,
+        alpha_a: bool
+    ) -> ([u8; 16], [u8; 16]) {  // Returns (h_a0, h_a1)
+        unsafe {
+            // Prepare AES key from gate_id (same for both)
+            let mut key_bytes = [0u8; 16];
+            *(key_bytes.as_mut_ptr() as *mut u64) = gate_id;
+            let key_vec = _mm_loadu_si128(key_bytes.as_ptr() as *const __m128i);
+            
+            // Load both labels as SIMD vectors 
+            let label0_vec = _mm_loadu_si128(a_label0.as_ptr() as *const __m128i);
+            let label1_vec = _mm_loadu_si128(a_label1.as_ptr() as *const __m128i);
+            
+            // Select based on alpha_a for both h_a0 and h_a1
+            let (data_vec0, data_vec1) = if alpha_a {
+                (label0_vec, label1_vec)  // h_a0 = hash(label0), h_a1 = hash(label1)
+            } else {
+                (label1_vec, label0_vec)  // h_a0 = hash(label1), h_a1 = hash(label0)
+            };
+            
+            // Compute both AES encryptions in parallel
+            let mut result0_vec = _mm_xor_si128(data_vec0, key_vec);
+            result0_vec = _mm_aesenc_si128(result0_vec, key_vec);
+            result0_vec = _mm_aesenclast_si128(result0_vec, key_vec);
+            
+            let mut result1_vec = _mm_xor_si128(data_vec1, key_vec);
+            result1_vec = _mm_aesenc_si128(result1_vec, key_vec);
+            result1_vec = _mm_aesenclast_si128(result1_vec, key_vec);
+            
+            // Store results
+            let mut h_a0 = [0u8; 16];
+            let mut h_a1 = [0u8; 16];
+            _mm_storeu_si128(h_a0.as_mut_ptr() as *mut __m128i, result0_vec);
+            _mm_storeu_si128(h_a1.as_mut_ptr() as *mut __m128i, result1_vec);
+            
+            (h_a0, h_a1)
+        }
+    }
+
     /// Hardware AES-NI accelerated implementation
     #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
     #[target_feature(enable = "aes,sse2")]
@@ -376,6 +424,113 @@ mod aes_hash {
             let result3 = hasher3.finalize();
             
             assert_ne!(result1, result3, "Different gate_id should produce different output");
+        }
+        
+        #[test]
+        fn test_blake3_hasher_performance() {
+            const NUM_CALLS: usize = 5_000_000; // 5 million calls
+            
+            println!("Testing Blake3 hasher performance with {} calls...", NUM_CALLS);
+            
+            // Prepare test data (simulating wire labels + gate_id)
+            let label1 = [0x42u8; 16];
+            let label2 = [0x84u8; 16]; 
+            let gate_id = 12345u64;
+            
+            let mut test_data = Vec::with_capacity(40);
+            test_data.extend_from_slice(&label1);
+            test_data.extend_from_slice(&label2);
+            test_data.extend_from_slice(&gate_id.to_le_bytes());
+            
+            let start = Instant::now();
+            
+            // Benchmark loop
+            for i in 0..NUM_CALLS {
+                // Vary the gate_id to prevent unrealistic optimizations
+                let varied_gate_id = (gate_id + i as u64) % 10000;
+                let mut data = test_data.clone();
+                data[32..40].copy_from_slice(&varied_gate_id.to_le_bytes());
+                
+                let _result = blake3::hash(&data);
+                
+                // Verify we get deterministic results
+                if i == 0 {
+                    println!("First Blake3 hash result: {:02x?}", &_result.as_bytes()[0..16]);
+                }
+            }
+            
+            let duration = start.elapsed();
+            let calls_per_second = NUM_CALLS as f64 / duration.as_secs_f64();
+            let nanos_per_call = duration.as_nanos() as f64 / NUM_CALLS as f64;
+            
+            println!("Blake3 Performance results:");
+            println!("  Total time: {:?}", duration);
+            println!("  Calls per second: {:.0}", calls_per_second);
+            println!("  Nanoseconds per call: {:.2}", nanos_per_call);
+            println!("  Estimated time for 3.98T calls: {:.2} hours", 
+                     3.98e12 / calls_per_second / 3600.0);
+            
+            // Performance assertions for Blake3
+            assert!(nanos_per_call < 2000.0, "Blake3 call should be under 2000ns");
+            assert!(calls_per_second > 500_000.0, "Should handle over 500K calls/sec");
+        }
+
+        #[test]
+        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+        fn test_aes_dual_hash_performance() {
+            const NUM_CALLS: usize = 2_500_000; // 2.5 million dual-hash calls = 5M single hashes
+            
+            println!("Testing AES dual-hash performance with {} calls...", NUM_CALLS);
+            println!("(Each call computes 2 hashes = {} total hash operations)", NUM_CALLS * 2);
+            
+            // Simulate garbled wire labels
+            let a_label0 = [0x11u8; 16];
+            let a_label1 = [0x22u8; 16]; // Simulates a_label0 ^ delta
+            let base_gate_id = 12345u64;
+            let alpha_a = true;
+            
+            let start = Instant::now();
+            
+            // Accumulator to prevent compiler optimizations
+            let mut checksum = 0u64;
+            
+            // Benchmark dual-hash function
+            for i in 0..NUM_CALLS {
+                let gate_id = (base_gate_id + i as u64) % 10000;
+                
+                let (h_a0, h_a1) = unsafe {
+                    aes_hash_dual_simd(&a_label0, &a_label1, gate_id, alpha_a)
+                };
+                
+                // Use results to prevent compiler optimization
+                checksum = checksum.wrapping_add(h_a0[0] as u64 + h_a1[0] as u64);
+                
+                if i == 0 {
+                    println!("First dual-hash result: h_a0={:02x?}, h_a1={:02x?}", &h_a0[0..8], &h_a1[0..8]);
+                }
+            }
+            
+            // Prevent optimization of the entire loop
+            if checksum == 0 { panic!("Impossible checksum"); }
+            
+            let duration = start.elapsed();
+            let dual_calls_per_second = NUM_CALLS as f64 / duration.as_secs_f64();
+            let single_calls_per_second = (NUM_CALLS * 2) as f64 / duration.as_secs_f64();
+            let nanos_per_dual_call = duration.as_nanos() as f64 / NUM_CALLS as f64;
+            let nanos_per_single_call = duration.as_nanos() as f64 / (NUM_CALLS * 2) as f64;
+            
+            println!("AES Dual-Hash Performance results:");
+            println!("  Total time: {:?}", duration);
+            println!("  Dual-calls per second: {:.0}", dual_calls_per_second);
+            println!("  Single-calls per second equivalent: {:.0}", single_calls_per_second);
+            println!("  Nanoseconds per dual-call: {:.2}", nanos_per_dual_call);
+            println!("  Nanoseconds per single-call equivalent: {:.2}", nanos_per_single_call);
+            println!("  Estimated time for 3.98T single calls: {:.2} hours", 
+                     3.98e12 / single_calls_per_second / 3600.0);
+            
+            // Performance assertions - should be faster than 2 individual calls
+            assert!(nanos_per_single_call < 200.0, "Dual-hash should achieve under 200ns per single hash equivalent");
+            assert!(single_calls_per_second > 5_000_000.0, "Should handle over 5M single-call equivalents/sec");
         }
     }
 }
