@@ -302,17 +302,23 @@ impl TuiApp {
             );
 
             let eta = if snap.total_speed > 0.0 {
-                let remaining_gates = snap
+                // Calculate remaining work: gates in active threads + all pending tasks
+                let remaining_gates_active = snap
                     .circuit
                     .total_gates
                     .saturating_sub(snap.total_gates_processed);
-                let eta_seconds = remaining_gates as f64 / snap.total_speed;
+                let remaining_tasks_work = remaining_tasks * snap.circuit.total_gates;
+                let total_remaining_gates = remaining_gates_active + remaining_tasks_work;
+                
+                let eta_seconds = total_remaining_gates as f64 / snap.total_speed;
                 format!(
                     "ETA: {}",
                     format_duration(Duration::from_secs(eta_seconds as u64))
                 )
-            } else {
+            } else if remaining_tasks > 0 || snap.system.active_workers > 0 {
                 "ETA: Calculating...".to_string()
+            } else {
+                "ETA: Complete".to_string()
             };
 
             format!(

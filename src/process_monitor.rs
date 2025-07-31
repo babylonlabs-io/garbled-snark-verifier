@@ -365,7 +365,11 @@ impl ProcessMonitor {
 
         // Calculate aggregate metrics
         let total_gates_processed: usize = thread_snapshots.iter().map(|t| t.current_gate).sum();
-        let total_speed: f64 = thread_snapshots.iter().map(|t| t.gates_per_second).sum();
+        // Only count current speed from active threads (Running status)
+        let total_speed: f64 = thread_snapshots.iter()
+            .filter(|t| t.status == ThreadStatus::Running)
+            .map(|t| t.gates_per_second)
+            .sum();
         let overall_progress = if self.circuit.total_gates > 0 {
             (total_gates_processed as f64 / self.circuit.total_gates as f64) * 100.0
         } else {
