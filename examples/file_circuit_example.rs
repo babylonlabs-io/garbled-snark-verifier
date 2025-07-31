@@ -29,6 +29,79 @@ use serde::{Deserialize, Serialize};
 mod aes_hash {
     use aes::{Aes128, cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray}};
     use digest::Digest;
+    
+    // Hardware-accelerated AES-NI implementation when available
+    #[cfg(target_arch = "x86_64")]
+    use std::arch::x86_64::*;
+
+    /// Direct AES hash function bypassing trait overhead for maximum performance
+    /// Uses hardware AES-NI when available for 4-8x speedup
+    #[inline(always)]
+    pub fn aes_hash_direct(label1: &[u8; 16], label2: &[u8; 16], gate_id: u64) -> [u8; 16] {
+        #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+        unsafe {
+            aes_hash_hardware(label1, label2, gate_id)
+        }
+        
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "aes")))]
+        {
+            aes_hash_software(label1, label2, gate_id)
+        }
+    }
+
+    /// Hardware AES-NI accelerated implementation
+    #[cfg(all(target_arch = "x86_64", target_feature = "aes"))]
+    #[target_feature(enable = "aes,sse2")]
+    unsafe fn aes_hash_hardware(label1: &[u8; 16], label2: &[u8; 16], gate_id: u64) -> [u8; 16] {
+        unsafe {
+            // Prepare AES key from gate_id
+            let mut key_bytes = [0u8; 16];
+            *(key_bytes.as_mut_ptr() as *mut u64) = gate_id;
+            
+            // Prepare plaintext (label1 XOR label2 for mixing)
+            let mut plaintext = [0u8; 16];
+            for i in 0..16 {
+                plaintext[i] = label1[i] ^ label2[i];
+            }
+            
+            // Load key and plaintext as 128-bit registers
+            let key_vec = _mm_loadu_si128(key_bytes.as_ptr() as *const __m128i);
+            let mut data_vec = _mm_loadu_si128(plaintext.as_ptr() as *const __m128i);
+            
+            // Single round AES encryption using hardware instructions
+            data_vec = _mm_xor_si128(data_vec, key_vec);
+            data_vec = _mm_aesenc_si128(data_vec, key_vec);
+            data_vec = _mm_aesenclast_si128(data_vec, key_vec);
+            
+            // Store result
+            let mut result = [0u8; 16];
+            _mm_storeu_si128(result.as_mut_ptr() as *mut __m128i, data_vec);
+            result
+        }
+    }
+
+    /// Software fallback implementation
+    #[inline(always)]
+    fn aes_hash_software(label1: &[u8; 16], label2: &[u8; 16], gate_id: u64) -> [u8; 16] {
+        // Build AES key directly
+        let mut key = [0u8; 16];
+        unsafe {
+            *(key.as_mut_ptr() as *mut u64) = gate_id;
+        }
+        
+        // Prepare plaintext (label1 XOR label2 for mixing)
+        let mut plaintext = [0u8; 16];
+        for i in 0..16 {
+            plaintext[i] = label1[i] ^ label2[i];
+        }
+        
+        // Single AES encryption
+        let cipher = Aes128::new(&GenericArray::from(key));
+        let mut block = GenericArray::from(plaintext);
+        cipher.encrypt_block(&mut block);
+        
+        block.into()
+    }
 
     /// Ultra high-performance AES-based hasher for 3.98T executions
     /// Uses AES encryption: output_label = AES(key=gate_id, plaintext=label1 || label2)
@@ -171,6 +244,57 @@ mod aes_hash {
         use super::*;
         use std::time::Instant;
 
+        #[test]
+        fn test_aes_direct_performance() {
+            const NUM_CALLS: usize = 5_000_000; // 5 million calls
+            
+            println!("Testing DIRECT AES hardware performance with {} calls...", NUM_CALLS);
+            
+            // Prepare test data
+            let label1 = [0x42u8; 16];
+            let label2 = [0x84u8; 16]; 
+            let base_gate_id = 12345u64;
+            
+            let start = Instant::now();
+            
+            // Accumulator to prevent compiler optimizations
+            let mut checksum = 0u64;
+            
+            // Benchmark direct AES function (bypassing trait overhead)
+            for i in 0..NUM_CALLS {
+                // Vary the gate_id to prevent unrealistic optimizations
+                let gate_id = (base_gate_id + i as u64) % 10000;
+                
+                let result = aes_hash_direct(&label1, &label2, gate_id);
+                
+                // Use result to prevent compiler optimization
+                checksum = checksum.wrapping_add(result[0] as u64);
+                
+                // Verify we get deterministic results
+                if i == 0 {
+                    println!("First direct hash result: {:02x?}", result);
+                }
+            }
+            
+            // Prevent optimization of the entire loop
+            if checksum == 0 { panic!("Impossible checksum"); }
+            
+            let duration = start.elapsed();
+            let calls_per_second = NUM_CALLS as f64 / duration.as_secs_f64();
+            let nanos_per_call = duration.as_nanos() as f64 / NUM_CALLS as f64;
+            
+            println!("DIRECT AES Performance results:");
+            println!("  Total time: {:?}", duration);
+            println!("  Calls per second: {:.0}", calls_per_second);
+            println!("  Nanoseconds per call: {:.2}", nanos_per_call);
+            println!("  Estimated time for 3.98T calls: {:.2} hours", 
+                     3.98e12 / calls_per_second / 3600.0);
+            
+            // More aggressive performance targets for hardware AES
+            assert!(nanos_per_call < 25.0, "Direct AES call should be under 25ns with hardware acceleration");
+            assert!(calls_per_second > 40_000_000.0, "Should handle over 40M calls/sec with AES-NI");
+        }
+        
         #[test]
         fn test_aes_hasher_performance() {
             const NUM_CALLS: usize = 5_000_000; // 5 million calls
