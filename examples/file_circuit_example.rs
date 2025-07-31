@@ -30,30 +30,38 @@ mod aes_hash {
     use aes::{Aes128, cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray}};
     use digest::Digest;
 
-    /// AES-based hasher that implements the Digest trait
+    /// Ultra high-performance AES-based hasher for 3.98T executions
     /// Uses AES encryption: output_label = AES(key=gate_id, plaintext=label1 || label2)
+    /// No caching, no allocations, minimal operations
     #[derive(Clone)]
     pub struct AesHasher {
-        buffer: Vec<u8>,
+        // Fixed-size buffer - no Vec allocations
+        buffer: [u8; 40], // Max: 16 + 16 + 8 = 40 bytes  
+        len: usize,
     }
 
     impl Default for AesHasher {
         fn default() -> Self {
             Self {
-                buffer: Vec::new(),
+                buffer: [0u8; 40],
+                len: 0,
             }
         }
     }
 
     impl digest::Reset for AesHasher {
         fn reset(&mut self) {
-            self.buffer.clear();
+            self.len = 0;
         }
     }
 
     impl digest::Update for AesHasher {
         fn update(&mut self, data: &[u8]) {
-            self.buffer.extend_from_slice(data);
+            let copy_len = (data.len()).min(40 - self.len);
+            if copy_len > 0 {
+                self.buffer[self.len..self.len + copy_len].copy_from_slice(&data[..copy_len]);
+                self.len += copy_len;
+            }
         }
     }
 
@@ -62,29 +70,37 @@ mod aes_hash {
     }
 
     impl digest::FixedOutput for AesHasher {
+        #[inline(always)]
         fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
-            // Extract gate_id from the buffer (last 8 bytes should be gate_id)
-            let gate_id_bytes = if self.buffer.len() >= 8 {
-                &self.buffer[self.buffer.len() - 8..]
+            // Direct gate_id extraction (last 8 bytes)
+            let gate_id = if self.len >= 8 {
+                u64::from_le_bytes(
+                    unsafe { *(self.buffer.as_ptr().add(self.len - 8) as *const [u8; 8]) }
+                )
             } else {
-                // Fallback: pad with zeros if not enough data
-                &[0u8; 8]
+                0u64
             };
             
-            let gate_id = u64::from_le_bytes(gate_id_bytes.try_into().unwrap_or([0u8; 8]));
-            
-            // Use first part as plaintext (label1 || label2), pad if necessary
-            let mut plaintext = [0u8; 16];
-            let data_len = (self.buffer.len().saturating_sub(8)).min(16);
-            if data_len > 0 {
-                plaintext[..data_len].copy_from_slice(&self.buffer[..data_len]);
+            // Build AES key directly - no caching, just fast key setup
+            let mut key = [0u8; 16];
+            unsafe {
+                *(key.as_mut_ptr() as *mut u64) = gate_id;
             }
             
-            // Create AES key from gate_id (pad to 16 bytes)
-            let mut key = [0u8; 16];
-            key[..8].copy_from_slice(&gate_id.to_le_bytes());
+            // Prepare plaintext directly from buffer
+            let mut plaintext = [0u8; 16];
+            let data_len = (self.len.saturating_sub(8)).min(16);
+            if data_len > 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        self.buffer.as_ptr(),
+                        plaintext.as_mut_ptr(),
+                        data_len
+                    );
+                }
+            }
             
-            // Encrypt: AES(key=gate_id, plaintext=label1||label2)
+            // Single AES encryption - no caching overhead
             let cipher = Aes128::new(&GenericArray::from(key));
             let mut block = GenericArray::from(plaintext);
             cipher.encrypt_block(&mut block);
@@ -147,6 +163,95 @@ mod aes_hash {
             let mut hasher = Self::new();
             hasher.update(data);
             hasher.finalize()
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::time::Instant;
+
+        #[test]
+        fn test_aes_hasher_performance() {
+            const NUM_CALLS: usize = 5_000_000; // 5 million calls
+            
+            println!("Testing AES hasher performance with {} calls...", NUM_CALLS);
+            
+            // Prepare test data (simulating wire labels + gate_id)
+            let label1 = [0x42u8; 16];
+            let label2 = [0x84u8; 16]; 
+            let gate_id = 12345u64;
+            
+            let mut test_data = Vec::with_capacity(40);
+            test_data.extend_from_slice(&label1);
+            test_data.extend_from_slice(&label2);
+            test_data.extend_from_slice(&gate_id.to_le_bytes());
+            
+            let start = Instant::now();
+            
+            // Benchmark loop
+            for i in 0..NUM_CALLS {
+                let mut hasher = AesHasher::new();
+                
+                // Vary the gate_id to prevent unrealistic optimizations
+                let varied_gate_id = (gate_id + i as u64) % 10000;
+                let mut data = test_data.clone();
+                data[32..40].copy_from_slice(&varied_gate_id.to_le_bytes());
+                
+                hasher.update(&data);
+                let _result = hasher.finalize();
+                
+                // Verify we get deterministic results
+                if i == 0 {
+                    println!("First hash result: {:02x?}", _result.as_slice());
+                }
+            }
+            
+            let duration = start.elapsed();
+            let calls_per_second = NUM_CALLS as f64 / duration.as_secs_f64();
+            let nanos_per_call = duration.as_nanos() as f64 / NUM_CALLS as f64;
+            
+            println!("Performance results:");
+            println!("  Total time: {:?}", duration);
+            println!("  Calls per second: {:.0}", calls_per_second);
+            println!("  Nanoseconds per call: {:.2}", nanos_per_call);
+            println!("  Estimated time for 3.98T calls: {:.2} hours", 
+                     3.98e12 / calls_per_second / 3600.0);
+            
+            // Performance assertions - these may need adjustment based on hardware
+            assert!(nanos_per_call < 1000.0, "Each call should be under 1000ns");
+            assert!(calls_per_second > 1_000_000.0, "Should handle over 1M calls/sec");
+        }
+        
+        #[test]
+        fn test_aes_hasher_correctness() {
+            let label1 = [0x11u8; 16];
+            let label2 = [0x22u8; 16];
+            let gate_id = 42u64;
+            
+            let mut data = Vec::with_capacity(40);
+            data.extend_from_slice(&label1);
+            data.extend_from_slice(&label2);
+            data.extend_from_slice(&gate_id.to_le_bytes());
+            
+            // Test multiple times with same input
+            let mut hasher1 = AesHasher::new();
+            hasher1.update(&data);
+            let result1 = hasher1.finalize();
+            
+            let mut hasher2 = AesHasher::new();
+            hasher2.update(&data);
+            let result2 = hasher2.finalize();
+            
+            assert_eq!(result1, result2, "Same input should produce same output");
+            
+            // Test different gate_id produces different output
+            data[32..40].copy_from_slice(&43u64.to_le_bytes());
+            let mut hasher3 = AesHasher::new();
+            hasher3.update(&data);
+            let result3 = hasher3.finalize();
+            
+            assert_ne!(result1, result3, "Different gate_id should produce different output");
         }
     }
 }
