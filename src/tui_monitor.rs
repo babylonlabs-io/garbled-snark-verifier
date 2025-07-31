@@ -162,8 +162,12 @@ impl TuiApp {
                 snap.system.active_workers,
                 snap.system.max_workers,
                 format_large_number(snap.circuit.num_wire),
-                (snap.system.completed_tasks as f64 / snap.system.total_garbling_tasks as f64)
-                    * 100.0
+                if snap.system.total_garbling_tasks > 0 {
+                    ((snap.system.completed_tasks as f64 / snap.system.total_garbling_tasks as f64) * 100.0)
+                        .clamp(0.0, 100.0)
+                } else {
+                    0.0
+                }
             )
         } else {
             "Waiting for data...".to_string()
@@ -236,7 +240,7 @@ impl TuiApp {
                             )
                         } else {
                             // Normal progress display for active threads
-                            let progress_bar = create_progress_bar(thread.progress_percent, 10);
+                            let progress_bar = create_progress_bar(thread.progress_percent.clamp(0.0, 100.0), 10);
                             let hash_display = if let Some(ref hash) = thread.input_hash160 {
                                 format!(" | Hash: {}...", &hash[0..8.min(hash.len())])
                             } else {
@@ -294,9 +298,12 @@ impl TuiApp {
             .border_style(Style::default().fg(Color::Yellow));
 
         let content = if let Some(snap) = snapshot {
-            let global_progress = (snap.system.completed_tasks as f64
-                / snap.system.total_garbling_tasks as f64)
-                * 100.0;
+            let global_progress = if snap.system.total_garbling_tasks > 0 {
+                ((snap.system.completed_tasks as f64 / snap.system.total_garbling_tasks as f64) * 100.0)
+                    .clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
             let remaining_tasks = snap.system.total_garbling_tasks.saturating_sub(
                 snap.system.completed_tasks + snap.system.failed_tasks + snap.system.active_workers,
             );
@@ -377,8 +384,19 @@ impl TuiApp {
 }
 
 fn create_progress_bar(percent: f64, width: usize) -> String {
+    // Clamp inputs to prevent overflow
+    let width = width.min(200); // Maximum progress bar width
+    let percent = percent.clamp(0.0, 100.0); // Clamp percentage to valid range
+    
     let filled = ((percent / 100.0) * width as f64) as usize;
+    let filled = filled.min(width); // Ensure filled doesn't exceed width
     let empty = width.saturating_sub(filled);
+    
+    // Additional safety check to prevent huge allocations
+    if width > 100877 { // Safe limit for string allocation
+        return format!("[{:.1}%]", percent);
+    }
+    
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
 }
 
