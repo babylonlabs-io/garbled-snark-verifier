@@ -26,6 +26,131 @@ use rand_chacha::ChaCha8Rng;
 use serde::{Deserialize, Serialize};
 // std::hash traits used with full paths to avoid conflicts
 
+mod aes_hash {
+    use aes::{Aes128, cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray}};
+    use digest::Digest;
+
+    /// AES-based hasher that implements the Digest trait
+    /// Uses AES encryption: output_label = AES(key=gate_id, plaintext=label1 || label2)
+    #[derive(Clone)]
+    pub struct AesHasher {
+        buffer: Vec<u8>,
+    }
+
+    impl Default for AesHasher {
+        fn default() -> Self {
+            Self {
+                buffer: Vec::new(),
+            }
+        }
+    }
+
+    impl digest::Reset for AesHasher {
+        fn reset(&mut self) {
+            self.buffer.clear();
+        }
+    }
+
+    impl digest::Update for AesHasher {
+        fn update(&mut self, data: &[u8]) {
+            self.buffer.extend_from_slice(data);
+        }
+    }
+
+    impl digest::OutputSizeUser for AesHasher {
+        type OutputSize = digest::consts::U16;
+    }
+
+    impl digest::FixedOutput for AesHasher {
+        fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
+            // Extract gate_id from the buffer (last 8 bytes should be gate_id)
+            let gate_id_bytes = if self.buffer.len() >= 8 {
+                &self.buffer[self.buffer.len() - 8..]
+            } else {
+                // Fallback: pad with zeros if not enough data
+                &[0u8; 8]
+            };
+            
+            let gate_id = u64::from_le_bytes(gate_id_bytes.try_into().unwrap_or([0u8; 8]));
+            
+            // Use first part as plaintext (label1 || label2), pad if necessary
+            let mut plaintext = [0u8; 16];
+            let data_len = (self.buffer.len().saturating_sub(8)).min(16);
+            if data_len > 0 {
+                plaintext[..data_len].copy_from_slice(&self.buffer[..data_len]);
+            }
+            
+            // Create AES key from gate_id (pad to 16 bytes)
+            let mut key = [0u8; 16];
+            key[..8].copy_from_slice(&gate_id.to_le_bytes());
+            
+            // Encrypt: AES(key=gate_id, plaintext=label1||label2)
+            let cipher = Aes128::new(&GenericArray::from(key));
+            let mut block = GenericArray::from(plaintext);
+            cipher.encrypt_block(&mut block);
+            
+            out.copy_from_slice(&block);
+        }
+    }
+
+    impl Digest for AesHasher {
+        fn new() -> Self {
+            Self::default()
+        }
+        
+        fn new_with_prefix(data: impl AsRef<[u8]>) -> Self {
+            let mut hasher = Self::new();
+            hasher.update(data);
+            hasher
+        }
+        
+        fn update(&mut self, data: impl AsRef<[u8]>) {
+            digest::Update::update(self, data.as_ref());
+        }
+        
+        fn chain_update(mut self, data: impl AsRef<[u8]>) -> Self {
+            self.update(data);
+            self
+        }
+        
+        fn finalize(self) -> GenericArray<u8, Self::OutputSize> {
+            let mut out = GenericArray::default();
+            digest::FixedOutput::finalize_into(self, &mut out);
+            out
+        }
+        
+        fn finalize_into(self, out: &mut GenericArray<u8, Self::OutputSize>) {
+            digest::FixedOutput::finalize_into(self, out);
+        }
+        
+        fn finalize_reset(&mut self) -> GenericArray<u8, Self::OutputSize> {
+            let result = self.clone().finalize();
+            self.reset();
+            result
+        }
+        
+        fn finalize_into_reset(&mut self, out: &mut GenericArray<u8, Self::OutputSize>) {
+            let result = self.clone();
+            self.reset();
+            digest::FixedOutput::finalize_into(result, out);
+        }
+        
+        fn reset(&mut self) {
+            digest::Reset::reset(self);
+        }
+        
+        fn output_size() -> usize {
+            16
+        }
+        
+        fn digest(data: impl AsRef<[u8]>) -> GenericArray<u8, Self::OutputSize> {
+            let mut hasher = Self::new();
+            hasher.update(data);
+            hasher.finalize()
+        }
+    }
+}
+
 // Include wire values generated from main branch
 include!("../wire_values.rs");
 
@@ -54,7 +179,7 @@ fn create_proof_input_handler() -> Box<dyn Fn(WireId) -> Option<bool>> {
     Box::new(move |wire_id| wire_values.get(&wire_id).copied())
 }
 
-type GarblingHasher = blake3::Hasher;
+type GarblingHasher = aes_hash::AesHasher;
 
 #[derive(Serialize, Deserialize)]
 struct LabelPair([u8; 16], [u8; 16]);
