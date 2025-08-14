@@ -46,6 +46,15 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for DummyCircuit<F> {
 }
 
 fn main() -> std::io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let path = if args.len() > 1 {
+        std::path::PathBuf::from(&args[1])
+    } else {
+        eprintln!("Usage: {} <output_file>", args[0]);
+        eprintln!("Using default: verifier_gates.bin");
+        std::path::PathBuf::from("verifier_gates.bin")
+    };
+    
     let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
     let circuit = DummyCircuit::<<ark_bn254::Bn254 as Pairing>::ScalarField> {
         a: Some(<ark_bn254::Bn254 as Pairing>::ScalarField::rand(&mut rng)),
@@ -60,14 +69,12 @@ fn main() -> std::io::Result<()> {
     let proof_a = G1Affine::wires_set_montgomery(proof.a);
     let proof_b = G2Affine::wires_set_montgomery(proof.b);
     let proof_c = G1Affine::wires_set_montgomery(proof.c);
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("verifier_gates.bin");
     Circuit::start_gate_recording(&path)?;
     let (result, _gc) =
         groth16_verifier_evaluate_montgomery(public, proof_a, proof_b, proof_c, vk, false);
     Circuit::finish_gate_recording()?;
     println!("Verification result: {}", result.borrow().get_value());
     let records = read_gates(&path)?;
-    println!("Stored {} gate records", records);
+    println!("Stored {} gate records to {:?}", records, path);
     Ok(())
 }
