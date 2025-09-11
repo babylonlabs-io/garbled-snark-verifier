@@ -15,6 +15,10 @@ keywords = [
 ]
 description = "Garbled-circuit SNARK verifier using Groth16 (BN254), with reusable gadgets and ergonomic circuit composition."
 
+[features]
+default = ["poseidon2"]
+poseidon2 = ["p3-poseidon2", "p3-field", "p3-symmetric", "p3-goldilocks", "once_cell"]
+
 [dependencies]
 aes = "0.8"
 ark-bn254 = "0.5.0"
@@ -41,6 +45,13 @@ slab = "0.4.11"
 slotmap = "1.0"
 thiserror = "2.0.12"
 
+# Optional dependencies for Poseidon2 hasher
+p3-poseidon2 = { version = "0.3.0", optional = true }
+p3-field = { version = "0.3.0", optional = true }
+p3-symmetric = { version = "0.3.0", optional = true }
+p3-goldilocks = { version = "0.3.0", optional = true }
+once_cell = { version = "1.21", optional = true }
+
 [dev-dependencies]
 ark-ec = "0.5.0"
 ark-relations = "0.5.0"
@@ -63,3 +74,9 @@ debug = true           # Essential for symbol resolution
 codegen-units = 1      # Better inlining visibility
 lto = "fat"           # Cross-crate optimization
 panic = "abort"       # Faster execution, smaller binary
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"

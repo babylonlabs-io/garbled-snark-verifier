@@ -3,6 +3,7 @@
 // Run with:
 //   Default (AES): `RUST_LOG=info cargo run --example groth16_garble --release`
 //   Blake3:        `RUST_LOG=info cargo run --example groth16_garble --release -- --hasher blake3`
+//   Poseidon2:     `RUST_LOG=info cargo run --example groth16_garble --release -- --hasher poseidon2`
 
 use std::{env, time::Instant};
 
@@ -14,6 +15,8 @@ use ark_relations::{
     r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError},
 };
 use ark_snark::{CircuitSpecificSetupSNARK, SNARK};
+#[cfg(feature = "poseidon2")]
+use garbled_snark_verifier::Poseidon2Hasher;
 use garbled_snark_verifier::{
     AesNiHasher, Blake3Hasher, CiphertextHashAcc, EvaluatedWire, GarbledWire, GateHasher,
     circuit::streaming::{
@@ -325,6 +328,11 @@ fn main() {
             info!("Using Blake3 hasher");
             run_with_hasher::<Blake3Hasher>();
         }
+        #[cfg(feature = "poseidon2")]
+        Some("poseidon2") => {
+            info!("Using Poseidon2 hasher");
+            run_with_hasher::<Poseidon2Hasher>();
+        }
         Some("aes") | None => {
             // Warn if hardware AES is not available or not used by this build
             garbled_snark_verifier::warn_if_software_aes();
@@ -332,9 +340,14 @@ fn main() {
             run_with_hasher::<AesNiHasher>();
         }
         Some(other) => {
+            #[cfg(feature = "poseidon2")]
+            let supported = "aes, blake3, poseidon2";
+            #[cfg(not(feature = "poseidon2"))]
+            let supported = "aes, blake3";
+
             eprintln!(
-                "Unknown hasher '{}'. Supported: aes, blake3. Defaulting to aes.",
-                other
+                "Unknown hasher '{}'. Supported: {}. Defaulting to aes.",
+                other, supported
             );
             garbled_snark_verifier::warn_if_software_aes();
             run_with_hasher::<AesNiHasher>();

@@ -7,6 +7,8 @@ mod math;
 pub mod storage;
 
 // Re-export the procedural macro
+#[cfg(feature = "poseidon2")]
+pub use core::gate::garbling::Poseidon2Hasher;
 pub use core::{
     DefaultHasher,
     delta::Delta,
