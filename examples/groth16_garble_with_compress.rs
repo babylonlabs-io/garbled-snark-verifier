@@ -67,7 +67,7 @@ enum G2EMsg {
         output_label1_hash: [u8; 32],
         ciphertext_hash: u128,
 
-        input_labels: garbled_groth16::EvaluatorInput,
+        input_labels: garbled_groth16::EvaluatorCompressedInput,
         true_wire: u128,
         false_wire: u128,
     },
@@ -98,7 +98,8 @@ fn run_with_hasher<H: GateHasher + 'static>(garbling_seed: u64) {
     let inputs = garbled_groth16::GarblerInput {
         public_params_len: 1,
         vk: vk.clone(),
-    };
+    }
+    .compress();
 
     // Create channel for garbled tables
     let (ciphertext_acc_hash_sender, ciphertext_acc_hash_receiver) =
@@ -125,7 +126,7 @@ fn run_with_hasher<H: GateHasher + 'static>(garbling_seed: u64) {
             CAPACITY,
             garbling_seed,
             ciphertext_acc_hash_sender,
-            garbled_groth16::verify,
+            garbled_groth16::verify_compressed,
         );
 
     info!("garbling: in {:.3}s", garble_start.elapsed().as_secs_f64());
@@ -157,7 +158,8 @@ fn run_with_hasher<H: GateHasher + 'static>(garbling_seed: u64) {
 
     let proof = garbled_groth16::Proof::new(proof, vec![public_param]);
 
-    let input_labels = garbled_groth16::EvaluatorInput::new(proof, vk.clone(), input_values);
+    let input_labels =
+        garbled_groth16::EvaluatorCompressedInput::new(proof, vk.clone(), input_values);
 
     let msg = G2EMsg::Commit {
         output_label0_hash: hash(&label0.to_bytes()),
@@ -185,7 +187,7 @@ fn run_with_hasher<H: GateHasher + 'static>(garbling_seed: u64) {
                 CAPACITY,
                 garbling_seed,
                 ciphertext_to_evaluator_sender,
-                garbled_groth16::verify,
+                garbled_groth16::verify_compressed,
             );
 
         info!(
@@ -227,7 +229,7 @@ fn run_with_hasher<H: GateHasher + 'static>(garbling_seed: u64) {
                 true_wire,
                 false_wire,
                 proxy_receiver,
-                garbled_groth16::verify,
+                garbled_groth16::verify_compressed,
             );
 
         info!("evaluation: in {:.3}s", eval_start.elapsed().as_secs_f64());
