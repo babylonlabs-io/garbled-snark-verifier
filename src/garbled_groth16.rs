@@ -1,5 +1,7 @@
 //! High-level Groth16 verification API (BN254) for streaming circuits.
 
+use std::ops::Deref;
+
 use ark_bn254::Bn254;
 use ark_ec::AffineRepr;
 use ark_ff::{AdditiveGroup, Field, PrimeField};
@@ -10,8 +12,8 @@ use num_bigint::BigUint;
 // Bring trait with N_BITS into scope for Fr/Fq wires
 use crate::gadgets::bn254::Fp254Impl;
 use crate::{
-    CircuitContext, Fq2Wire, FqWire, FrWire, G1Wire, G2Wire, GarbledWire, WireId,
-    bits_from_biguint_with_len,
+    CircuitContext, EvaluatedWire, Fq2Wire, FqWire, FrWire, G1Wire, G2Wire, GarbleMode,
+    GarbledWire, GateHasher, WireId, bits_from_biguint_with_len,
     circuit::streaming::{CircuitInput, CircuitMode, EncodeInput, WiresObject},
     gadgets::groth16::{self as gadgets, CompressedG1Wires, CompressedG2Wires},
 };
@@ -298,12 +300,18 @@ pub fn verify_compressed<C: CircuitContext>(ctx: &mut C, wires: &ProofCompressed
 // ============================================================================
 
 #[derive(Debug, Clone)]
-pub struct GarbledInputs {
+pub struct GarblerInput {
     pub public_params_len: usize,
     pub vk: VerifyingKey<Bn254>,
 }
 
-impl CircuitInput for GarbledInputs {
+impl GarblerInput {
+    pub fn compress(self) -> GarblerCompressedInput {
+        GarblerCompressedInput { inner: self }
+    }
+}
+
+impl CircuitInput for GarblerInput {
     type WireRepr = ProofWires;
     fn allocate(&self, mut issue: impl FnMut() -> WireId) -> Self::WireRepr {
         ProofWires {
@@ -334,9 +342,7 @@ impl CircuitInput for GarbledInputs {
     }
 }
 
-impl<H: crate::hashers::GateHasher> EncodeInput<crate::circuit::streaming::modes::GarbleMode<H>>
-    for GarbledInputs
-{
+impl<H: GateHasher> EncodeInput<GarbleMode<H>> for GarblerInput {
     fn encode(
         &self,
         repr: &ProofWires,
@@ -369,9 +375,10 @@ impl<H: crate::hashers::GateHasher> EncodeInput<crate::circuit::streaming::modes
 
 /// Bit-vector wrapper for field element wires evaluated against garbled labels.
 #[derive(Debug, Clone)]
-pub struct EvaluatedFrWires(pub Vec<crate::EvaluatedWire>);
-impl ::core::ops::Deref for EvaluatedFrWires {
-    type Target = [crate::EvaluatedWire];
+pub struct EvaluatedFrWires(pub Vec<EvaluatedWire>);
+
+impl Deref for EvaluatedFrWires {
+    type Target = [EvaluatedWire];
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -390,13 +397,13 @@ pub struct EvaluatedG2Wires {
 }
 
 impl EvaluatedG1Wires {
-    pub fn iter(&self) -> impl Iterator<Item = &crate::EvaluatedWire> {
+    pub fn iter(&self) -> impl Iterator<Item = &EvaluatedWire> {
         self.x.iter().chain(self.y.iter())
     }
 }
 
 #[derive(Debug)]
-pub struct Evaluator {
+pub struct EvaluatorInput {
     pub public: Vec<EvaluatedFrWires>,
     pub a: EvaluatedG1Wires,
     pub b: EvaluatedG2Wires,
@@ -404,7 +411,7 @@ pub struct Evaluator {
     pub vk: VerifyingKey<Bn254>,
 }
 
-impl Evaluator {
+impl EvaluatorInput {
     pub fn new(proof: Proof, vk: VerifyingKey<Bn254>, wires: Vec<GarbledWire>) -> Self {
         // public scalars + (a.x,a.y) + (b.x,b.y as Fq2 -> 2 Fq each) + (c.x,c.y)
         // = public.len * Fr::N_BITS + 8 * Fq::N_BITS
@@ -427,7 +434,7 @@ impl Evaluator {
                 EvaluatedFrWires(
                     bits.into_iter()
                         .zip_eq(wires_chunk)
-                        .map(|(bit, gw)| crate::EvaluatedWire::new_from_garbled(gw, bit))
+                        .map(|(bit, gw)| EvaluatedWire::new_from_garbled(gw, bit))
                         .collect(),
                 )
             })
@@ -445,7 +452,7 @@ impl Evaluator {
             EvaluatedFrWires(
                 bits.into_iter()
                     .zip_eq(wires.by_ref().take(FqWire::N_BITS))
-                    .map(|(bit, gw)| crate::EvaluatedWire::new_from_garbled(gw, bit))
+                    .map(|(bit, gw)| EvaluatedWire::new_from_garbled(gw, bit))
                     .collect(),
             )
         }
@@ -473,7 +480,7 @@ impl Evaluator {
             y: to_eval_fq_bits(&c_m.y, &mut wires),
         };
 
-        Evaluator {
+        EvaluatorInput {
             public,
             a,
             b,
@@ -483,7 +490,7 @@ impl Evaluator {
     }
 }
 
-impl CircuitInput for Evaluator {
+impl CircuitInput for EvaluatorInput {
     type WireRepr = ProofWires;
     fn allocate(&self, mut issue: impl FnMut() -> WireId) -> Self::WireRepr {
         ProofWires {
@@ -514,7 +521,7 @@ impl CircuitInput for Evaluator {
     }
 }
 
-impl<M: CircuitMode<WireValue = crate::EvaluatedWire>> EncodeInput<M> for Evaluator {
+impl<M: CircuitMode<WireValue = EvaluatedWire>> EncodeInput<M> for EvaluatorInput {
     fn encode(&self, repr: &ProofWires, cache: &mut M) {
         repr.public
             .iter()
@@ -566,5 +573,156 @@ impl<M: CircuitMode<WireValue = crate::EvaluatedWire>> EncodeInput<M> for Evalua
             .for_each(|(wire_id, ew)| {
                 cache.feed_wire(*wire_id, ew.clone());
             });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GarblerCompressedInput {
+    inner: GarblerInput,
+}
+
+impl CircuitInput for GarblerCompressedInput {
+    type WireRepr = ProofCompressedWires;
+
+    fn allocate(&self, mut issue: impl FnMut() -> WireId) -> Self::WireRepr {
+        ProofCompressedWires {
+            public: (0..self.inner.public_params_len)
+                .map(|_| FrWire::new(&mut issue))
+                .collect(),
+            a: CompressedG1Wires::new(&mut issue),
+            b: CompressedG2Wires::new(&mut issue),
+            c: CompressedG1Wires::new(issue),
+            vk: self.inner.vk.clone(),
+        }
+    }
+    fn collect_wire_ids(repr: &Self::WireRepr) -> Vec<WireId> {
+        let mut ids = Vec::new();
+        for s in &repr.public {
+            ids.extend(s.to_wires_vec());
+        }
+        ids.extend(repr.a.to_wires_vec());
+        ids.extend(repr.b.to_wires_vec());
+        ids.extend(repr.c.to_wires_vec());
+        ids
+    }
+}
+
+impl<H: GateHasher> EncodeInput<GarbleMode<H>> for GarblerCompressedInput {
+    fn encode(&self, _repr: &ProofCompressedWires, _cache: &mut GarbleMode<H>) {
+        // TODO Make the same as here, but with use `cache.issue_garbled_wire()` for feed
+        //
+        // Public Fr scalars
+        //for (w, v) in repr.public.iter().zip(self.0.proof.public_inputs.iter()) {
+        //    let fr_fn = FrWire::get_wire_bits_fn(w, v).unwrap();
+        //    for &wire in w.iter() {
+        //        if let Some(bit) = fr_fn(wire) {
+        //            cache.feed_wire(wire, bit);
+        //        }
+        //    }
+        //}
+
+        //// Compute sign flags off-circuit using standard affine, feed Montgomery x
+        //let a_aff_std = self.0.proof.proof.a;
+        //let b_aff_std = self.0.proof.proof.b;
+        //let c_aff_std = self.0.proof.proof.c;
+
+        //let a_flag = (a_aff_std.y.square())
+        //    .sqrt()
+        //    .expect("y^2 must be QR")
+        //    .eq(&a_aff_std.y);
+        //let b_flag = (b_aff_std.y.square())
+        //    .sqrt()
+        //    .expect("y^2 must be QR in Fq2")
+        //    .eq(&b_aff_std.y);
+        //let c_flag = (c_aff_std.y.square())
+        //    .sqrt()
+        //    .expect("y^2 must be QR")
+        //    .eq(&c_aff_std.y);
+
+        //let a_x_m = FqWire::as_montgomery(a_aff_std.x);
+        //let b_x_m = Fq2Wire::as_montgomery(b_aff_std.x);
+        //let c_x_m = FqWire::as_montgomery(c_aff_std.x);
+
+        //let a_x_fn = FqWire::get_wire_bits_fn(&repr.a.x_m, &a_x_m).unwrap();
+        //for &wire_id in repr.a.x_m.iter() {
+        //    if let Some(bit) = a_x_fn(wire_id) {
+        //        cache.feed_wire(wire_id, bit);
+        //    }
+        //}
+        //cache.feed_wire(repr.a.y_flag, a_flag);
+
+        //let b_x_fn = Fq2Wire::get_wire_bits_fn(&repr.b.p, &b_x_m).unwrap();
+        //for &wire_id in repr.b.p.iter() {
+        //    if let Some(bit) = b_x_fn(wire_id) {
+        //        cache.feed_wire(wire_id, bit);
+        //    }
+        //}
+        //cache.feed_wire(repr.b.y_flag, b_flag);
+
+        //let c_x_fn = FqWire::get_wire_bits_fn(&repr.c.x_m, &c_x_m).unwrap();
+        //for &wire_id in repr.c.x_m.iter() {
+        //    if let Some(bit) = c_x_fn(wire_id) {
+        //        cache.feed_wire(wire_id, bit);
+        //    }
+        //}
+        //cache.feed_wire(repr.c.y_flag, c_flag);
+    }
+}
+
+#[derive(Debug)]
+pub struct EvaluatedCompressedG1Wires {
+    pub x: EvaluatedFrWires,
+    pub y_flag: EvaluatedWire,
+}
+
+#[derive(Debug)]
+pub struct EvaluatedCompressedG2Wires {
+    pub x: [EvaluatedFrWires; 2],
+    pub y_flag: [EvaluatedFrWires; 2],
+}
+
+pub struct EvaluatorCompressedInput {
+    pub public: Vec<EvaluatedFrWires>,
+    pub a: EvaluatedCompressedG1Wires,
+    pub b: EvaluatedCompressedG2Wires,
+    pub c: EvaluatedCompressedG1Wires,
+    pub vk: VerifyingKey<Bn254>,
+}
+
+impl EvaluatorCompressedInput {
+    pub fn new(_proof: Proof, _vk: VerifyingKey<Bn254>, _wires: Vec<GarbledWire>) -> Self {
+        todo!("Same as `EvaluatorInput::new` but with respect to compression")
+    }
+}
+
+impl CircuitInput for EvaluatorCompressedInput {
+    type WireRepr = ProofCompressedWires;
+
+    fn allocate(&self, mut issue: impl FnMut() -> WireId) -> Self::WireRepr {
+        ProofCompressedWires {
+            public: (0..self.public.len())
+                .map(|_| FrWire::new(&mut issue))
+                .collect(),
+            a: CompressedG1Wires::new(&mut issue),
+            b: CompressedG2Wires::new(&mut issue),
+            c: CompressedG1Wires::new(issue),
+            vk: self.vk.clone(),
+        }
+    }
+    fn collect_wire_ids(repr: &Self::WireRepr) -> Vec<WireId> {
+        let mut ids = Vec::new();
+        for s in &repr.public {
+            ids.extend(s.to_wires_vec());
+        }
+        ids.extend(repr.a.to_wires_vec());
+        ids.extend(repr.b.to_wires_vec());
+        ids.extend(repr.c.to_wires_vec());
+        ids
+    }
+}
+
+impl<M: CircuitMode<WireValue = EvaluatedWire>> EncodeInput<M> for EvaluatorCompressedInput {
+    fn encode(&self, _repr: &ProofCompressedWires, _cache: &mut M) {
+        todo!()
     }
 }
