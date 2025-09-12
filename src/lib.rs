@@ -50,6 +50,7 @@ pub mod test_utils {
     }
 }
 
+pub mod cut_and_choose;
 pub mod garbled_groth16;
 
 // All ark-* related items live under this module for clarity
@@ -69,3 +70,5 @@ pub mod ark {
     };
     pub use ark_snark::{CircuitSpecificSetupSNARK, SNARK};
 }
+
+pub mod groth16_cut_and_choose;

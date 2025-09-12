@@ -22,6 +22,17 @@ impl CiphertextHashAcc {
         );
     }
 
+    /// Update the running hash with many ciphertexts.
+    ///
+    /// Currently processes them sequentially; structured for future
+    /// vectorized AES-NI batches (2/4/8/16/32) without changing call sites.
+    #[inline]
+    pub fn update_many(&mut self, ciphertexts: &[S]) {
+        for &ct in ciphertexts {
+            self.update(ct);
+        }
+    }
+
     pub fn finalize(self) -> u128 {
         self.running_hash.to_u128()
     }
