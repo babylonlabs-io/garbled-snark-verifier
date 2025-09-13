@@ -1,14 +1,8 @@
 #![allow(dead_code)]
 
-use std::{
-    collections::HashMap,
-    fmt,
-    num::NonZero,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{collections::HashMap, fmt, num::NonZero, thread};
 
-use crossbeam::channel::{self, Select};
+use crossbeam::channel::{self};
 use log::info;
 use rayon::prelude::*;
 
@@ -56,17 +50,12 @@ where
         rx: channel::Receiver<(usize, S)>,
         hasher: CiphertextHashAcc,
         commit_tx: channel::Sender<u128>,
-        buffer: Vec<S>,
     }
 
     let expected_instances = seeds.len();
     let (register_tx, register_rx) = channel::unbounded::<Registration>();
 
-    // Time-window micro-batching duration. Collect across all instances for a short window,
-    // then apply hash updates in bulk and start a new window.
-    const WINDOW_DURATION: Duration = Duration::from_millis(1);
-
-    const HASH_CHUNK_SIZE: usize = 8; // TODO: allow {2,4,8,16,32} later
+    // Simplicity-first collector: block on any ready receiver and hash immediately.
 
     let collector = thread::spawn(move || {
         info!(
@@ -77,120 +66,51 @@ where
         let mut finished = 0usize;
 
         while finished < expected_instances {
-            // Define the end of the current window
-            let window_deadline = Instant::now() + WINDOW_DURATION;
+            let mut did_work = false;
 
-            // Inner loop: collect as much as we can until the window expires
-            loop {
-                // Remaining time in this window
-                let now = Instant::now();
-                if now >= window_deadline {
-                    break;
-                }
-                let remaining = window_deadline - now;
-
-                // Build a fresh select set: registration + all active instance receivers
-                // Build select and perform the blocking selection, then drop select
-                enum Event {
-                    Register(Registration),
-                    InstanceMsg { idx: usize, msg: Option<(usize, S)> },
-                    Timeout,
-                }
-
-                let event = {
-                    let mut sel = Select::new();
-                    let reg_si = sel.recv(&register_rx);
-                    let mut si_to_idx: HashMap<usize, usize> = HashMap::new();
-                    for (idx, inst) in instances.iter().enumerate() {
-                        let si = sel.recv(&inst.rx);
-                        si_to_idx.insert(si, idx);
-                    }
-
-                    match sel.select_timeout(remaining) {
-                        Ok(oper) if oper.index() == reg_si => match oper.recv(&register_rx) {
-                            Ok(reg) => Event::Register(reg),
-                            Err(_) => Event::Timeout,
-                        },
-                        Ok(oper) => {
-                            if let Some(&inst_idx) = si_to_idx.get(&oper.index()) {
-                                match oper.recv(&instances[inst_idx].rx) {
-                                    Ok(msg) => Event::InstanceMsg {
-                                        idx: inst_idx,
-                                        msg: Some(msg),
-                                    },
-                                    Err(_) => Event::InstanceMsg {
-                                        idx: inst_idx,
-                                        msg: None,
-                                    },
-                                }
-                            } else {
-                                Event::Timeout
-                            }
-                        }
-                        Err(_) => Event::Timeout,
-                    }
-                };
-
-                match event {
-                    Event::Register(reg) => {
-                        instances.push(InstanceState {
-                            rx: reg.rx,
-                            commit_tx: reg.commit_tx,
-                            hasher: CiphertextHashAcc::default(),
-                            buffer: Vec::with_capacity(HASH_CHUNK_SIZE),
-                        });
-                        // Drain any queued registrations quickly
-                        while let Ok(reg) = register_rx.try_recv() {
-                            instances.push(InstanceState {
-                                rx: reg.rx,
-                                commit_tx: reg.commit_tx,
-                                hasher: CiphertextHashAcc::default(),
-                                buffer: Vec::with_capacity(HASH_CHUNK_SIZE),
-                            });
-                        }
-                    }
-                    Event::InstanceMsg {
-                        idx: inst_idx,
-                        msg: Some((_gate_id, ciphertext)),
-                    } => {
-                        let state = &mut instances[inst_idx];
-                        state.buffer.push(ciphertext);
-                        // Drain a bit more opportunistically
-                        while state.buffer.len() < HASH_CHUNK_SIZE {
-                            match state.rx.try_recv() {
-                                Ok((_, ct)) => state.buffer.push(ct),
-                                Err(channel::TryRecvError::Empty) => break,
-                                Err(channel::TryRecvError::Disconnected) => break,
-                            }
-                        }
-                    }
-                    Event::InstanceMsg {
-                        idx: inst_idx,
-                        msg: None,
-                    } => {
-                        // Channel closed: flush and finalize immediately for this instance
-                        let mut state = instances.swap_remove(inst_idx);
-                        if !state.buffer.is_empty() {
-                            state.hasher.update_many(&state.buffer);
-                            state.buffer.clear();
-                        }
-                        let commit = state.hasher.finalize();
-                        let _ = state.commit_tx.send(commit);
-                        finished += 1;
-                    }
-                    Event::Timeout => {
-                        // Window expired; break to flush buffers in bulk
-                        break;
-                    }
-                }
+            // Accept any new registrations (tick) without blocking
+            while let Ok(reg) = register_rx.try_recv() {
+                instances.push(InstanceState {
+                    rx: reg.rx,
+                    commit_tx: reg.commit_tx,
+                    hasher: CiphertextHashAcc::default(),
+                });
+                did_work = true;
             }
 
-            // End of window: bulk-apply buffered updates per instance
-            for state in instances.iter_mut() {
-                if !state.buffer.is_empty() {
-                    state.hasher.update_many(&state.buffer);
-                    state.buffer.clear();
+            // Drain each instance non-blockingly, updating hash immediately per ciphertext
+            let mut i = 0usize;
+            while i < instances.len() {
+                let mut closed = false;
+                loop {
+                    match instances[i].rx.try_recv() {
+                        Ok((_gate_id, ct)) => {
+                            instances[i].hasher.update(ct);
+                            did_work = true;
+                        }
+                        Err(channel::TryRecvError::Empty) => break,
+                        Err(channel::TryRecvError::Disconnected) => {
+                            closed = true;
+                            break;
+                        }
+                    }
                 }
+
+                if closed {
+                    // Finalize this instance commit and remove it
+                    let state = instances.swap_remove(i);
+                    let commit = state.hasher.finalize();
+                    let _ = state.commit_tx.send(commit);
+                    finished += 1;
+                    continue; // do not increment i; we swapped in a new item
+                }
+
+                i += 1;
+            }
+
+            if !did_work {
+                // Avoid hot spinning when idle
+                std::thread::yield_now();
             }
         }
 
@@ -200,10 +120,11 @@ where
     let results: Vec<GarbledCircuitCommit<O>> = seeds
         .par_iter()
         .map(|garbling_seed| {
-            // Per-instance ciphertext channel. Bounded to avoid unbounded memory growth.
-            // If the collector can't keep up, this applies backpressure to garbling.
-            let (ciphertext_tx, ciphertext_rx) = channel::bounded::<(usize, S)>(16_384);
-            let (commit_tx, commit_rx) = channel::bounded::<u128>(1);
+            // Per-instance ciphertext channel. Unbounded so garbling never blocks on collector.
+            // NOTE: Memory usage may grow if collector lags behind producers.
+            let (ciphertext_tx, ciphertext_rx) = channel::unbounded::<(usize, S)>();
+            // Unbounded commit channel to ensure collector never blocks on send
+            let (commit_tx, commit_rx) = channel::unbounded::<u128>();
 
             // Tick: register with the collector before heavy work begins
             register_tx
