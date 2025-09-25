@@ -3,13 +3,13 @@ pub mod vsss;
 
 #[cfg(test)]
 mod tests {
-    use crate::cac::{adaptor_sigs::AdaptorInfo, vsss::lagrange_interpolate_at_index};
-
-    use super::*;
     use bitcoin::{TapSighash, hashes::Hash};
     use k256::schnorr::SigningKey;
     use rand::prelude::IteratorRandom;
     use sha2::{Digest, Sha256};
+
+    use super::*;
+    use crate::cac::{adaptor_sigs::AdaptorInfo, vsss::lagrange_interpolate_at_index};
 
     #[test]
     fn test_full_flow() {

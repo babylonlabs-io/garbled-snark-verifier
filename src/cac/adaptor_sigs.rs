@@ -1,11 +1,7 @@
-use bitcoin::TapSighash;
-use bitcoin::hashes::Hash;
-use k256::FieldBytes;
-use k256::elliptic_curve::PrimeField;
-use k256::elliptic_curve::point::AffineCoordinates;
-use k256::elliptic_curve::sec1::ToEncodedPoint;
+use bitcoin::{TapSighash, hashes::Hash};
 use k256::{
-    ProjectivePoint, Scalar,
+    FieldBytes, ProjectivePoint, Scalar,
+    elliptic_curve::{PrimeField, point::AffineCoordinates, sec1::ToEncodedPoint},
     schnorr::{Signature, SigningKey, VerifyingKey},
 };
 use rand;
@@ -99,6 +95,7 @@ impl AdaptorInfo {
             .expect("valid signature")
     }
 
+    #[allow(clippy::result_unit_err)]
     pub fn verify_garbler_signature(
         &self,
         sighash: &TapSighash,
@@ -112,10 +109,10 @@ impl AdaptorInfo {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use k256::{ProjectivePoint, Scalar, schnorr::SigningKey};
     use sha2::{Digest, Sha256};
 
+    use super::*;
     use crate::cac::adaptor_sigs::AdaptorInfo;
 
     #[test]
@@ -139,7 +136,7 @@ mod tests {
 
 #[cfg(test)]
 mod bitvm_tests {
-    use super::*;
+    use std::str::FromStr;
 
     use bitcoin::{
         Address, Amount, Network, ScriptBuf, TapSighashType, Transaction, TxIn, TxOut, Witness,
@@ -151,7 +148,8 @@ mod bitvm_tests {
         transaction::Version,
     };
     use bitcoin_script::script;
-    use std::str::FromStr;
+
+    use super::*;
 
     pub(crate) fn unspendable_pubkey() -> UntweakedPublicKey {
         XOnlyPublicKey::from_str("50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
