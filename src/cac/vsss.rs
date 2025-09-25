@@ -1,8 +1,7 @@
-use k256::elliptic_curve::PrimeField;
-use k256::{ProjectivePoint, Scalar};
+use std::ops::{Add, Mul};
+
+use k256::{ProjectivePoint, Scalar, elliptic_curve::PrimeField};
 use rand;
-use std::ops::Add;
-use std::ops::Mul;
 
 // we use this for both polynomials over scalars and over projective points
 pub struct Polynomial<T>(Vec<T>);
