@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sp1_sdk::{
     ExecutionReport, Prover, ProverClient, SP1ProofWithPublicValues, SP1PublicValues, SP1Stdin,
     SP1VerifyingKey,
@@ -42,9 +43,21 @@ pub fn execute(private_input: &WiresInput) -> ExecuteReport {
         .unwrap()
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProvenSolderedLabelsData {
     proof: SP1ProofWithPublicValues,
     vk: SP1VerifyingKey,
+}
+
+impl core::fmt::Debug for ProvenSolderedLabelsData {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ProvenSolderedLabelsData")
+            .field(
+                "proof_pub_values_len",
+                &self.proof.public_values.as_slice().len(),
+            )
+            .finish()
+    }
 }
 
 pub fn prove(private_input: &WiresInput) -> ProvenSolderedLabelsData {

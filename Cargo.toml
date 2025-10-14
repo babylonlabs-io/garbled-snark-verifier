@@ -40,7 +40,7 @@ ark-serialize = "0.5.0"
 default = ["tracing_max_level", "tracing_scopes", "sp1-soldering"]
 tracing_max_level = ["tracing/max_level_trace", "tracing/release_max_level_info"]
 tracing_scopes = []
-sp1-soldering = ["dep:gsv-soldering-core"]
+sp1-soldering = []
 
 [dependencies]
 aes = "0.8"
@@ -78,7 +78,7 @@ ark-secp256k1 = "0.5.0"
 bitcoin = { version = "0.32.7", features = ["rand", "rand-std"] }
 sha2 = "0.10.9"
 hex = "0.4.3"
-gsv-soldering-core = { path = "crates/soldering-core", optional = true }
+bincode = "1.3"
 
 
 [dev-dependencies]

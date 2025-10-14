@@ -22,7 +22,7 @@ use crate::{
 #[cfg(feature = "sp1-soldering")]
 use crate::{
     cut_and_choose::Sha256LabelCommitHasher,
-    soldering::{SolderInput, SolderedLabels, SolderingProof},
+    soldering::{SolderInput, SolderedLabels, SolderingError, SolderingProof},
 };
 
 #[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -559,10 +559,19 @@ pub enum SolderingCheckError {
         expected: [u8; 32],
         actual: [u8; 32],
     },
+    /// Failure while invoking or decoding the soldering CLI
+    Cli(SolderingError),
 }
 
 #[cfg(feature = "sp1-soldering")]
-impl error::Error for SolderingCheckError {}
+impl error::Error for SolderingCheckError {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        match self {
+            Self::Cli(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(feature = "sp1-soldering")]
 impl fmt::Display for SolderingCheckError {
@@ -615,6 +624,7 @@ impl fmt::Display for SolderingCheckError {
                 write!(f, ", got 0x")?;
                 super::write_commit_hex(f, actual)
             }
+            Self::Cli(err) => write!(f, "soldering CLI error: {err}"),
         }
     }
 }
@@ -646,7 +656,8 @@ where
             panic!()
         };
 
-        let verified_public_params = crate::soldering::verify_soldering(proof);
+        let verified_public_params =
+            crate::soldering::verify_soldering(proof).map_err(SolderingCheckError::Cli)?;
 
         let Some(&base_idx) = self.to_finalize.first() else {
             return Err(SolderingCheckError::ShapeMismatch(

@@ -2933,6 +2933,7 @@ dependencies = [
  "ark-serialize 0.5.0",
  "ark-snark",
  "ark-std 0.5.0",
+ "bincode",
  "bitcoin",
  "bitcoin-script",
  "bitvec",
@@ -2943,7 +2944,6 @@ dependencies = [
  "core_affinity",
  "crossbeam",
  "digest 0.10.7",
- "gsv-soldering-core",
  "hex",
  "itertools 0.14.0",
  "k256",
@@ -3063,9 +3063,12 @@ dependencies = [
 name = "gsv-soldering-core"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "hex",
  "itertools 0.10.5",
  "rand 0.9.2",
  "rkyv",
+ "serde",
  "sha2 0.10.9 (registry+https://github.com/rust-lang/crates.io-index)",
  "sp1-build",
  "sp1-sdk",

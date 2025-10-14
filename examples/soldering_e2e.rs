@@ -36,9 +36,10 @@ fn main() {
         })
         .collect();
 
-    // Prove and verify with SP1; requires `--features sp1-soldering` and SP1 artifacts
+    // Prove and verify with SP1 by invoking the CLI; requires
+    // `--features sp1-soldering`, a built `gsv-soldering-cli`, and the binary on PATH
     let proof = prove_soldering(&base, &additional, nonce).expect("prove");
-    let out = verify_soldering(proof);
+    let out = verify_soldering(proof).expect("verify");
     tracing::info!("soldering_e2e: proof verified");
 
     assert_eq!(out.deltas.len(), instances, "delta instances mismatch");
