@@ -5,8 +5,8 @@
 //! The goals for this layer are:
 //! - present stable function signatures that use our core types (`S`, `GarbledWire`)
 //! - avoid linking the SP1 SDK directly into the verifier crate; the CLI is
-//!   resolved from `GSV_SOLDERING_CLI`, `CARGO_BIN_EXE_gsv-soldering-cli`, or
-//!   the PATH at runtime
+//!   resolved from `GSV_SOLDERING_CLI`, `CARGO_BIN_EXE_gsv-soldering-cli`, a
+//!   build-script-provisioned `GSV_SOLDERING_CLI_BUILT`, or the PATH at runtime
 //! - provide ergonomic conversions and clear public outputs for downstream use
 //!
 //! The two entry points are:
@@ -227,6 +227,9 @@ fn cli_binary() -> OsString {
     }
     if let Some(cargo) = env::var_os("CARGO_BIN_EXE_gsv-soldering-cli") {
         return cargo;
+    }
+    if let Some(built) = env::var_os("GSV_SOLDERING_CLI_BUILT") {
+        return built;
     }
     OsString::from("gsv-soldering-cli")
 }
