@@ -1,12 +1,10 @@
 //! Soldering API surface
 //!
 //! This module exposes a thin, feature-gated wrapper over the SP1-based
-//! soldering core by delegating to the external `gsv-soldering-cli` binary.
+//! soldering core by delegating to the in-tree `gsv-soldering-core` crate.
 //! The goals for this layer are:
 //! - present stable function signatures that use our core types (`S`, `GarbledWire`)
-//! - avoid linking the SP1 SDK directly into the verifier crate; the CLI is
-//!   resolved from `GSV_SOLDERING_CLI`, `CARGO_BIN_EXE_gsv-soldering-cli`, a
-//!   build-script-provisioned `GSV_SOLDERING_CLI_BUILT`, or the PATH at runtime
+//! - keep SP1 SDK usage confined to the dedicated crate
 //! - provide ergonomic conversions and clear public outputs for downstream use
 //!
 //! The two entry points are:
@@ -16,36 +14,17 @@
 //! - `verify_soldering`: verify the proof and return the public parameters
 //!   bound by the proof for consumer use.
 
-use std::{
-    env,
-    ffi::OsString,
-    io::{self, Write},
-    process::{Command, Stdio},
-    time::Instant,
+use soldering_core::{
+    host::{self, ProvenSolderedLabelsData},
+    types::{SolderedLabelsData, WiresInput},
 };
-
-use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use tracing::info;
 
 use crate::{GarbledWire, S, circuit::CircuitInput};
 
 /// SHA-256 commitment used for wire-label commitments.
 pub type Sha256Commit = [u8; 32];
-
-#[derive(Serialize)]
-struct CliWiresInput {
-    instances_wires: Vec<Vec<(u128, u128)>>,
-    nonce: u128,
-}
-
-#[derive(Serialize, Deserialize)]
-struct CliSolderedLabelsData {
-    deltas: Vec<Vec<(u128, u128)>>,
-    base_commitment: Vec<(Sha256Commit, Sha256Commit)>,
-    base_nonce_commitment: Vec<(Sha256Commit, Sha256Commit)>,
-    commitments: Vec<Vec<(Sha256Commit, Sha256Commit)>>,
-    nonce: u128,
-}
 
 /// Public values emitted by the soldering proof.
 ///
@@ -80,44 +59,16 @@ pub enum SolderingError {
         instance_idx: usize,
         got: usize,
     },
-    #[error("failed to encode soldering payload: {0}")]
-    Encode(#[source] bincode::Error),
-    #[error("failed to decode soldering payload: {0}")]
-    Decode(#[source] bincode::Error),
-    #[error("soldering CLI binary not found ({bin:?})")]
-    CliNotFound { bin: OsString },
-    #[error("failed to spawn soldering CLI ({bin:?}): {source}")]
-    CliSpawn {
-        bin: OsString,
-        #[source]
-        source: io::Error,
-    },
-    #[error("soldering CLI missing stdin handle")]
-    CliNoStdin,
-    #[error("failed to write to soldering CLI stdin: {0}")]
-    CliWrite(#[source] io::Error),
-    #[error("failed to wait for soldering CLI: {0}")]
-    CliWait(#[source] io::Error),
-    #[error("soldering CLI exited with status {status:?}: {stderr}")]
-    CliExit { status: Option<i32>, stderr: String },
-    #[error("soldering CLI output is not UTF-8: {0}")]
-    CliUtf8(#[source] std::string::FromUtf8Error),
-    #[error("soldering CLI output is not valid hex: {0}")]
-    CliHex(#[source] hex::FromHexError),
-    #[error("soldering CLI returned empty output")]
-    CliEmpty,
 }
 
-/// Opaque proof handle returned by the external soldering CLI.
+/// Opaque proof handle returned by the external soldering library.
 pub struct SolderingProof {
-    payload: Vec<u8>,
+    payload: ProvenSolderedLabelsData,
 }
 
 impl core::fmt::Debug for SolderingProof {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SolderingProof")
-            .field("payload_len", &self.payload.len())
-            .finish()
+        f.debug_struct("SolderingProof").finish()
     }
 }
 
@@ -162,15 +113,21 @@ pub fn prove_soldering(
         instances.push(inst.iter().map(to_wire).collect());
     }
 
-    let input = CliWiresInput {
+    let input = WiresInput {
         instances_wires: instances,
         nonce: nonce.to_u128(),
     };
 
-    let request = bincode::serialize(&input).map_err(SolderingError::Encode)?;
-    let response = run_cli("prove", &request)?;
+    let started = Instant::now();
+    let payload = host::prove(&input);
+    let elapsed = started.elapsed();
 
-    Ok(SolderingProof { payload: response })
+    info!(
+        duration = ?elapsed,
+        "soldering prove completed"
+    );
+
+    Ok(SolderingProof { payload })
 }
 
 /// Verify a soldering proof and extract its bound public parameters.
@@ -182,13 +139,16 @@ pub fn prove_soldering(
 /// - per-instance commitments
 pub fn verify_soldering(proof: SolderingProof) -> Result<SolderedLabels, SolderingError> {
     let SolderingProof { payload } = proof;
-    let response = run_cli("verify", &payload)?;
-    let data: CliSolderedLabelsData =
-        bincode::deserialize(&response).map_err(SolderingError::Decode)?;
+    let started = Instant::now();
+    let data = host::verify(payload);
+    let elapsed = started.elapsed();
+
+    info!(duration = ?elapsed, "soldering verify completed");
+
     Ok(convert_public_values(data))
 }
 
-fn convert_public_values(data: CliSolderedLabelsData) -> SolderedLabels {
+fn convert_public_values(data: SolderedLabelsData) -> SolderedLabels {
     let deltas = data
         .deltas
         .into_iter()
@@ -221,74 +181,6 @@ fn convert_public_values(data: CliSolderedLabelsData) -> SolderedLabels {
     }
 }
 
-fn cli_binary() -> OsString {
-    if let Some(explicit) = env::var_os("GSV_SOLDERING_CLI") {
-        return explicit;
-    }
-    if let Some(cargo) = env::var_os("CARGO_BIN_EXE_gsv-soldering-cli") {
-        return cargo;
-    }
-    if let Some(built) = env::var_os("GSV_SOLDERING_CLI_BUILT") {
-        return built;
-    }
-    OsString::from("gsv-soldering-cli")
-}
-
-fn run_cli(subcommand: &str, payload: &[u8]) -> Result<Vec<u8>, SolderingError> {
-    let bin = cli_binary();
-    let mut command = Command::new(&bin);
-    command
-        .arg(subcommand)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped());
-
-    let started = Instant::now();
-    let mut child = command.spawn().map_err(|source| match source.kind() {
-        io::ErrorKind::NotFound => SolderingError::CliNotFound { bin: bin.clone() },
-        _ => SolderingError::CliSpawn {
-            bin: bin.clone(),
-            source,
-        },
-    })?;
-
-    {
-        let stdin = child.stdin.as_mut().ok_or(SolderingError::CliNoStdin)?;
-        let hex_payload = hex::encode(payload);
-        stdin
-            .write_all(hex_payload.as_bytes())
-            .map_err(SolderingError::CliWrite)?;
-    }
-
-    let output = child.wait_with_output().map_err(SolderingError::CliWait)?;
-    let elapsed = started.elapsed();
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(SolderingError::CliExit {
-            status: output.status.code(),
-            stderr,
-        });
-    }
-
-    let stdout = String::from_utf8(output.stdout).map_err(SolderingError::CliUtf8)?;
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if !stderr.trim().is_empty() {
-        info!(?bin, subcommand, stderr = %stderr.trim(), "soldering CLI stderr");
-    }
-
-    let payload_hex = stdout.split_whitespace().collect::<String>();
-    if payload_hex.is_empty() {
-        return Err(SolderingError::CliEmpty);
-    }
-    let preview = if payload_hex.len() > 64 {
-        format!("{}…", &payload_hex[..64])
-    } else {
-        payload_hex.clone()
-    };
-    info!(?bin, subcommand, duration = ?elapsed, payload_len = payload_hex.len(), payload_preview = %preview, "soldering CLI completed");
-    let bytes = hex::decode(payload_hex).map_err(SolderingError::CliHex)?;
-    Ok(bytes)
-}
-
 pub trait SolderInput: CircuitInput {
     fn solder(&self, deltas: &[(S, S)]) -> Self;
 }
@@ -311,6 +203,7 @@ mod tests {
 
     use super::*;
     use crate::Delta;
+    use soldering_core::types::WiresInput;
 
     // This is a slow end-to-end check that exercises the SP1 flow.
     // It is ignored by default and only runs when the `sp1-soldering` feature
@@ -368,6 +261,106 @@ mod tests {
                 "wire {wire_idx}: label1 nonce commitment mismatch",
             );
         }
+    }
+
+    #[test]
+    #[ignore = "slow zkSNARK generation"]
+    fn prove_minimal() {
+        use std::time::Instant;
+
+        // Minimal test to check setup works and measure overhead
+        println!("\n=== Minimal Prove Test (direct core) ===");
+
+        let input = WiresInput {
+            instances_wires: vec![
+                vec![(1u128, 2u128)], // base
+                vec![(3u128, 4u128)], // instance 1
+            ],
+            nonce: 42,
+        };
+
+        let start = Instant::now();
+        let _proof_bytes = host::prove(&input);
+        let duration = start.elapsed();
+
+        println!("Minimal prove (core) completed in: {:.2?}", duration);
+        println!("Time (seconds): {:.3}", duration.as_secs_f64());
+    }
+
+    #[test]
+    #[ignore = "slow zkSNARK generation"]
+    fn prove_1019x2() {
+        use std::time::Instant;
+
+        use rand::Rng;
+
+        // Test with exact parameters matching soldering_e2e defaults
+        println!("\n========================================");
+        println!("Prove Performance Test (direct core)");
+        println!("========================================");
+        println!("Parameters: 1019 wires × 2 instances");
+        println!();
+
+        let mut rng = rand::thread_rng();
+
+        // Fixed parameters
+        const WIRES: usize = 1019;
+        const INSTANCES: usize = 2;
+
+        // Generate a consistent Free-XOR delta (must be odd)
+        let delta: u128 = rng.r#gen::<u128>() | 1;
+        let nonce: u128 = rng.r#gen();
+
+        let mut instances_wires = Vec::with_capacity(1 + INSTANCES);
+
+        // Generate all instances (base + additional)
+        for i in 0..=INSTANCES {
+            let instance: Vec<(u128, u128)> = (0..WIRES)
+                .map(|_| {
+                    let label0: u128 = rng.r#gen();
+                    let label1: u128 = label0 ^ delta;
+                    (label0, label1)
+                })
+                .collect();
+
+            instances_wires.push(instance);
+
+            if i == 0 {
+                println!("Generated base instance: {} wires", WIRES);
+            }
+        }
+
+        println!("Generated {} additional instances", INSTANCES);
+
+        let input = WiresInput {
+            instances_wires,
+            nonce,
+        };
+
+        // Confirm sizes
+        assert_eq!(input.instances_wires.len(), 8); // 1 base + 2 additional
+        assert_eq!(input.instances_wires[0].len(), 1019);
+
+        println!("Input ready:");
+        println!("  - Total instances: {}", input.instances_wires.len());
+        println!("  - Wires per instance: {}", input.instances_wires[0].len());
+        println!("  - Total wires: {}", 1019 * 8);
+        println!();
+
+        // Measure prove operation via direct dependency
+        println!("Starting prove operation via core...");
+        let prove_start = Instant::now();
+
+        let _proof_bytes = host::prove(&input);
+
+        let prove_duration = prove_start.elapsed();
+
+        println!("\n========================================");
+        println!("PROVE COMPLETED (core)");
+        println!("========================================");
+        println!("Time: {:.2?}", prove_duration);
+        println!("Time (seconds): {:.3}", prove_duration.as_secs_f64());
+        println!("Time (ms): {:.1}", prove_duration.as_secs_f64() * 1000.0);
     }
 
     #[test]

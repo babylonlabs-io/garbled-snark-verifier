@@ -1,7 +1,7 @@
 [package]
 name = "gsv-soldering-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 sha2 = "0.10.9"
@@ -11,15 +11,9 @@ rand = "0.9"
 test-log = { version = "0.2.8", default-features = false, features = ["trace"] }
 tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
-bincode = "1.3"
-hex = "0.4"
 
 [dev-dependencies]
 itertools = "*"
 
 [build-dependencies]
 sp1-build = "5.2.2"
-
-[[bin]]
-name = "gsv-soldering-cli"
-path = "src/bin/cli.rs"

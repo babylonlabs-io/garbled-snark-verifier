@@ -37,12 +37,21 @@ RE_EVALUATE = re.compile(
 RE_GARBLE_DONE = re.compile(r'garbling:\s+in\s+(?P<time>[\d\.]+)s')
 RE_REGARBLE_DONE = re.compile(r'regarbling:\s+in\s+(?P<time>[\d\.]+)s')
 RE_EVALUATE_DONE = re.compile(r'evaluation:\s+in\s+(?P<time>[\d\.]+)s')
+RE_SOLDERING = re.compile(
+    r'^(?P<ts>[\d\-T:\.Z]+)\s+INFO\s+soldering:\s*(?P<msg>.+)$'
+)
 
 @dataclass
 class Sample:
     t: float  # epoch seconds (UTC)
     v: int    # gates processed (monotonic, in gates)
     phase: str  # 'garble', 'regarble', or 'evaluate'
+
+@dataclass
+class SolderingStatus:
+    start_ts: Optional[float] = None
+    end_ts: Optional[float] = None
+    last_message: Optional[str] = None
 
 def parse_iso_utc(ts: str) -> float:
     if ts.endswith('Z'):
@@ -113,6 +122,16 @@ def check_phase_completion(line: str) -> Optional[Tuple[str, float]]:
 
     return None
 
+def parse_soldering_event(line: str) -> Optional[Tuple[float, str]]:
+    """Parse soldering events (start/end markers)."""
+    m = RE_SOLDERING.match(line.strip())
+    if not m:
+        return None
+
+    ts = parse_iso_utc(m.group('ts'))
+    msg = m.group('msg').strip()
+    return (ts, msg)
+
 def fmt_gates(v: int) -> str:
     if v >= 1_000_000_000:
         return f"{v/1_000_000_000:.2f}b"
@@ -159,9 +178,12 @@ def compute_window_rate(samples: List[Sample], window_sec: float) -> float:
 def print_status(
     phase_samples: dict,
     phase_completed: dict,
+    soldering_status: SolderingStatus,
     target_gates: int,
     window_sec: float
 ) -> None:
+    now = time.time()
+
     print("\033[2J\033[H")  # Clear screen
     print("=" * 80)
     print("GROTH16 GARBLE/EVALUATE MONITOR")
@@ -222,6 +244,36 @@ def print_status(
                 eta = remaining / window_rate
                 print(f"  ETA:        {fmt_duration(eta)}")
 
+    if soldering_status.start_ts is not None:
+        print(f"\n{'SOLDERING':12s}:")
+        print("-" * 75)
+
+        start_label = datetime.fromtimestamp(
+            soldering_status.start_ts, tz=timezone.utc
+        ).isoformat().replace("+00:00", "Z")
+        print(f"  Started:    {start_label}")
+
+        if (
+            soldering_status.end_ts is not None
+            and soldering_status.end_ts >= soldering_status.start_ts
+        ):
+            end_label = datetime.fromtimestamp(
+                soldering_status.end_ts, tz=timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+            duration = soldering_status.end_ts - soldering_status.start_ts
+            print("  Status:     COMPLETED")
+            print(f"  Finished:   {end_label}")
+            print(f"  Duration:   {fmt_duration(duration)}")
+        else:
+            elapsed = now - soldering_status.start_ts
+            if elapsed < 0:
+                elapsed = 0.0
+            print("  Status:     IN PROGRESS")
+            print(f"  Elapsed:    {fmt_duration(elapsed)}")
+
+        if soldering_status.last_message:
+            print(f"  Last Msg:   {soldering_status.last_message}")
+
     # Show concurrent status if both regarble and evaluate are active
     regarble_active = 'regarble' in phase_samples and 'regarble' not in phase_completed
     evaluate_active = 'evaluate' in phase_samples and 'evaluate' not in phase_completed
@@ -248,6 +300,8 @@ def print_status(
 def tail_file(path: str, target_gates: int, window_sec: float) -> None:
     phase_samples = {}  # phase -> List[Sample]
     phase_completed = {}  # phase -> completion_time_seconds
+    soldering_status = SolderingStatus()
+    last_refresh = 0.0
 
     def open_file():
         return open(path, 'r', encoding='utf-8', errors='ignore')
@@ -285,8 +339,25 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
             if not phase_samples[s.phase] or s.v > phase_samples[s.phase][-1].v:
                 phase_samples[s.phase].append(s)
 
+        solder_event = parse_soldering_event(line)
+        if solder_event:
+            ts, message = solder_event
+            lower_msg = message.lower()
+            soldering_status.last_message = message
+            if lower_msg.startswith("start"):
+                soldering_status.start_ts = ts
+                soldering_status.end_ts = None
+            elif any(
+                lower_msg.startswith(prefix)
+                for prefix in ("end", "done", "finish", "finished")
+            ) or "complete" in lower_msg:
+                if soldering_status.start_ts is None:
+                    soldering_status.start_ts = ts
+                soldering_status.end_ts = ts
+
     pos = f.tell()
-    print_status(phase_samples, phase_completed, target_gates, window_sec)
+    print_status(phase_samples, phase_completed, soldering_status, target_gates, window_sec)
+    last_refresh = time.time()
 
     # Live monitoring loop
     while True:
@@ -313,6 +384,7 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
             inode = f_stat.st_ino
             phase_samples.clear()
             phase_completed.clear()
+            soldering_status = SolderingStatus()
 
             # Re-read from start
             while True:
@@ -333,8 +405,25 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
                     if not phase_samples[s.phase] or s.v > phase_samples[s.phase][-1].v:
                         phase_samples[s.phase].append(s)
 
+                solder_event = parse_soldering_event(line)
+                if solder_event:
+                    ts, message = solder_event
+                    lower_msg = message.lower()
+                    soldering_status.last_message = message
+                    if lower_msg.startswith("start"):
+                        soldering_status.start_ts = ts
+                        soldering_status.end_ts = None
+                    elif any(
+                        lower_msg.startswith(prefix)
+                        for prefix in ("end", "done", "finish", "finished")
+                    ) or "complete" in lower_msg:
+                        if soldering_status.start_ts is None:
+                            soldering_status.start_ts = ts
+                        soldering_status.end_ts = ts
+
             pos = f.tell()
-            print_status(phase_samples, phase_completed, target_gates, window_sec)
+            print_status(phase_samples, phase_completed, soldering_status, target_gates, window_sec)
+            last_refresh = time.time()
             time.sleep(0.3)
             continue
 
@@ -342,6 +431,15 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
         line = f.readline()
         if not line:
             time.sleep(0.3)
+            if time.time() - last_refresh >= 1.0:
+                print_status(
+                    phase_samples,
+                    phase_completed,
+                    soldering_status,
+                    target_gates,
+                    window_sec,
+                )
+                last_refresh = time.time()
             continue
 
         pos = f.tell()
@@ -367,7 +465,24 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
                         # Keep last 1000 samples for active phases
                         phase_samples[phase] = samples[-1000:]
 
-        print_status(phase_samples, phase_completed, target_gates, window_sec)
+        solder_event = parse_soldering_event(line)
+        if solder_event:
+            ts, message = solder_event
+            lower_msg = message.lower()
+            soldering_status.last_message = message
+            if lower_msg.startswith("start"):
+                soldering_status.start_ts = ts
+                soldering_status.end_ts = None
+            elif any(
+                lower_msg.startswith(prefix)
+                for prefix in ("end", "done", "finish", "finished")
+            ) or "complete" in lower_msg:
+                if soldering_status.start_ts is None:
+                    soldering_status.start_ts = ts
+                soldering_status.end_ts = ts
+
+        print_status(phase_samples, phase_completed, soldering_status, target_gates, window_sec)
+        last_refresh = time.time()
 
 def main():
     parser = argparse.ArgumentParser(description="Monitor groth16_garble example logs")

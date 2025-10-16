@@ -67,7 +67,7 @@ pub fn prove(private_input: &WiresInput) -> ProvenSolderedLabelsData {
     tracing::info!("start setup");
     let (pk, vk) = prover.setup(guest::elf());
     tracing::info!("start prove");
-    let proof = prover.prove(&pk, &stdin).core().run().unwrap();
+    let proof = prover.prove(&pk, &stdin).groth16().run().unwrap();
 
     ProvenSolderedLabelsData { proof, vk }
 }
@@ -86,7 +86,7 @@ pub fn verify(data: ProvenSolderedLabelsData) -> SolderedLabelsData {
 mod test {
     use std::{iter, ops::BitXor, time::Instant};
 
-    use rand::{rng, Rng};
+    use rand::{Rng, rng};
     use sha2::Digest;
     use test_log::test;
 

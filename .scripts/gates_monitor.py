@@ -50,7 +50,7 @@ RE_GARBLE = re.compile(
     r'^(?P<ts>[\d\-T:\.Z]+)\s+INFO\s+garble:\s+garbled:\s*(?P<num>[\d\.]+)\s*(?P<unit>[mbMB])?\s+instance=(?P<instance>\d+)'
 )
 RE_SOLDERING = re.compile(
-    r'^(?P<ts>[\d\-T:\.Z]+)\s+INFO\s+soldering:.*$'
+    r'^(?P<ts>[\d\-T:\.Z]+)\s+INFO\s+soldering:\s*(?P<msg>.*)$'
 )
 RE_REGARBLE = re.compile(
     r'^(?P<ts>[\d\-T:\.Z]+)\s+INFO\s+regarble:\s+garbled:\s*(?P<num>[\d\.]+)\s*(?P<unit>[mbMB])?\s+instance=(?P<instance>\d+)'
@@ -90,7 +90,8 @@ class Sample:
     t: float        # epoch seconds (UTC)
     v: int          # gates processed (monotonic, in gates)
     instance: int   # instance ID
-    phase: str      # phase label ('garbling', 'regarbling', 'evaluation')
+    phase: str      # phase label ('garbling', 'regarbling', 'evaluation', 'soldering')
+    meta: Optional[str] = None  # auxiliary info (e.g., soldering message)
 
 
 @dataclass
@@ -103,6 +104,9 @@ class PhaseState:
     expected_total: Optional[int] = None
     evaluation_instance_counter: int = 0  # For assigning instance IDs when not provided
     evaluation_last_ts: Dict[float, int] = field(default_factory=dict)  # Map timestamp to instance
+    soldering_start: Optional[float] = None
+    soldering_end: Optional[float] = None
+    soldering_last_msg: Optional[str] = None
 
 def parse_iso_utc(ts: str) -> float:
     # Accept e.g. "2025-09-16T10:56:02.056992Z"
@@ -127,7 +131,8 @@ def parse_line_auto(line: str) -> Optional[Sample]:
     m = RE_SOLDERING.match(line)
     if m:
         ts = parse_iso_utc(m.group('ts'))
-        return Sample(ts, 0, 0, 'soldering')
+        msg = m.group('msg').strip()
+        return Sample(ts, 0, 0, 'soldering', meta=msg)
 
     m = RE_GARBLE.match(line)
     if m:
@@ -195,6 +200,8 @@ def parse_line(line: str) -> Optional[Sample]:
                 instance = 0
                 v = 0
                 phase = 'soldering'
+                msg = m.group('msg').strip()
+                return Sample(ts, v, instance, phase, meta=msg)
             return Sample(ts, v, instance, phase)
         return None
 
@@ -265,6 +272,28 @@ def process_sample(state: PhaseState, sample: Sample, target_gates: int, *, igno
 
     Returns True if the sample was appended (i.e. new progress recorded).
     """
+    if sample.phase == 'soldering':
+        state.samples.append(sample)
+        state.last_value_per_instance[sample.instance] = 0
+        state.soldering_last_msg = sample.meta
+
+        message = (sample.meta or "").strip().lower()
+        if message.startswith("start"):
+            state.soldering_start = sample.t
+            state.soldering_end = None
+        elif any(message.startswith(prefix) for prefix in ("end", "done", "finish", "finished")) or "complete" in message:
+            if state.soldering_start is None:
+                state.soldering_start = sample.t
+            state.soldering_end = sample.t
+        else:
+            if state.soldering_start is None:
+                state.soldering_start = sample.t
+
+        state.instance_times.setdefault(sample.instance, {'start': state.soldering_start or sample.t, 'end': None})
+        if state.soldering_end is not None:
+            state.instance_times[sample.instance]['end'] = state.soldering_end
+        return True
+
     # Handle evaluation mode with no instance IDs
     if sample.phase == 'evaluation' and sample.instance is None:
         # Assign instance based on value pattern - find which instance this belongs to
@@ -348,12 +377,12 @@ def build_phase_summary(phase: str, state: PhaseState, target_gates: int) -> str
         return "pending"
 
     if phase == 'soldering':
-        # Show elapsed time within current soldering span based on first/last sample timestamps
-        # No progress metrics; just timing.
-        ts_list = [s.t for s in state.samples]
-        if not ts_list:
+        if state.soldering_start is None:
             return "pending"
-        elapsed = max(ts_list) - min(ts_list)
+        if state.soldering_end is not None:
+            duration = max(0.0, state.soldering_end - state.soldering_start)
+            return f"completed in {fmt_duration(duration)}"
+        elapsed = max(0.0, time.time() - state.soldering_start)
         return f"elapsed {fmt_duration(elapsed)}"
 
     if phase == 'evaluation':
@@ -405,6 +434,7 @@ def print_auto_status(
                 state.instance_times,
                 state.expected_total,
                 state.max_instance_id,
+                phase_state=state,
             )
         finally:
             MODE = previous_mode
@@ -600,8 +630,53 @@ def print_status(
     instance_times: dict,
     expected_total: Optional[int] = None,
     max_instance_id: int = -1,
+    phase_state: Optional[PhaseState] = None,
 ) -> None:
     if not samples:
+        return
+
+    if phase_state is None:
+        phase_state = PhaseState()
+
+    if MODE == "soldering":
+        now = time.time()
+        start = phase_state.soldering_start
+        if start is None and instance_times:
+            start_candidates = [
+                info.get('start')
+                for info in instance_times.values()
+                if info and info.get('start') is not None
+            ]
+            start = min(start_candidates) if start_candidates else None
+        if start is None:
+            start = samples[0].t
+
+        end = phase_state.soldering_end
+        if end is None:
+            end = max(now, max(s.t for s in samples))
+
+        elapsed = max(0.0, end - start)
+
+        status = "COMPLETED" if phase_state.soldering_end is not None else "IN PROGRESS"
+        started_label = datetime.fromtimestamp(start, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        finished_label = (
+            datetime.fromtimestamp(phase_state.soldering_end, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            if phase_state.soldering_end is not None else None
+        )
+
+        print("\033[2J\033[H")
+        print("=" * 80)
+        print("SOLDERING PHASE MONITOR")
+        print("=" * 80)
+        print(f"\n  Status:   {status}")
+        print(f"  Started:  {started_label}")
+        if finished_label:
+            print(f"  Finished: {finished_label}")
+        print(f"  Elapsed:  {fmt_duration(elapsed)}")
+        if phase_state.soldering_last_msg:
+            print(f"  Message:  {phase_state.soldering_last_msg}")
+        print("\n" + "=" * 80)
+        sys.stdout.flush()
         return
 
     # Group samples by instance
@@ -792,13 +867,11 @@ def print_status(
             if time_remaining > 0:
                 print(f"Time Remaining: {fmt_duration(time_remaining)}")
 
-                from datetime import datetime, timezone
                 finish_ts = datetime.fromtimestamp(last_time + time_remaining, tz=timezone.utc)
                 print(f"Est. completion: {finish_ts.isoformat()}")
         elif window_rate > 0 and eta is not None and eta > 0:
             # Fall back to window rate calculation if no progress yet
             print(f"Time Remaining (est): {fmt_duration(eta)}")
-            from datetime import datetime, timezone
             finish_ts = datetime.fromtimestamp(last_time + eta, tz=timezone.utc)
             print(f"Est. completion: {finish_ts.isoformat()}")
     elif len(active_instances) == 0 and len(completed_instances) > 0:
@@ -898,6 +971,7 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
             state.instance_times,
             state.expected_total,
             state.max_instance_id,
+            phase_state=state,
         )
 
     # Live loop
@@ -943,6 +1017,7 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
                     state.instance_times,
                     state.expected_total,
                     state.max_instance_id,
+                    phase_state=state,
                 )
             time.sleep(0.3)
             continue
@@ -971,6 +1046,7 @@ def tail_file(path: str, target_gates: int, window_sec: float) -> None:
                 state.instance_times,
                 state.expected_total,
                 state.max_instance_id,
+                phase_state=state,
             )
 
 def main():
