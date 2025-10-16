@@ -1,9 +1,13 @@
+//! Groth16-specific wrappers around the generic cut-and-choose API so callers
+//! can mirror the protocol described in `docs/gsv_spec.md` with minimal glue.
 #[cfg(feature = "sp1-soldering")]
 use garbled_groth16::{EvaluatedCompressedG1Wires, EvaluatedCompressedG2Wires, EvaluatedFrWires};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-pub use crate::cut_and_choose::{GarbledInstanceCommit, LabelCommitHasher, OpenForInstance, Seed};
+pub use crate::cut_and_choose::{
+    CommitPhaseOne, CommitPhaseTwo, LabelCommitHasher, OpenForInstance, Seed,
+};
 #[cfg(feature = "sp1-soldering")]
 use crate::soldering::SolderInput;
 use crate::{
@@ -11,7 +15,7 @@ use crate::{
     circuit::{CiphertextHandler, CiphertextSource},
     cut_and_choose::{
         self as generic, CiphertextCommit, CiphertextHandlerProvider, CiphertextSourceProvider,
-        ConsistencyError, DefaultLabelCommitHasher, GarblerStage, LabelCommit,
+        ConsistencyError, DefaultLabelCommitHasher, GarblerStage,
     },
     garbled_groth16::{self, PublicParams},
 };
@@ -38,14 +42,18 @@ impl Garbler {
         Self { inner }
     }
 
-    pub fn commit_with_hasher<HHasher>(
-        &self,
-        nonce: Option<S>,
-    ) -> Vec<GarbledInstanceCommit<HHasher>>
+    pub fn commit_phase_one<HHasher>(&self) -> Vec<CommitPhaseOne<HHasher>>
     where
         HHasher: LabelCommitHasher,
     {
-        self.inner.commit_with_hasher::<HHasher>(&nonce)
+        self.inner.commit_phase_one::<HHasher>()
+    }
+
+    pub fn commit_phase_two<HHasher>(&self, nonce: S) -> Vec<CommitPhaseTwo<HHasher>>
+    where
+        HHasher: LabelCommitHasher,
+    {
+        self.inner.commit_phase_two::<HHasher>(nonce)
     }
 
     pub fn open_commit<CTH: 'static + Send + CiphertextHandler>(
@@ -116,14 +124,14 @@ pub struct Evaluator<HHasher: LabelCommitHasher = DefaultLabelCommitHasher> {
 
 impl<H: LabelCommitHasher> Evaluator<H> {
     // Generate `to_finalize` with `rng` based on data on `Config`
-    pub fn create(rng: impl Rng, config: Config, commits: Vec<GarbledInstanceCommit<H>>) -> Self {
+    pub fn create(rng: impl Rng, config: Config, commits: Vec<CommitPhaseOne<H>>) -> Self {
         let inner = generic::Evaluator::<garbled_groth16::GarblerCompressedInput, H>::create(
             rng, config, commits,
         );
         Self { inner }
     }
 
-    pub fn fill_second_commit(&mut self, commits: Vec<Vec<LabelCommit<H::Output>>>) {
+    pub fn fill_second_commit(&mut self, commits: Vec<CommitPhaseTwo<H>>) {
         self.inner.fill_second_commit(commits);
     }
 

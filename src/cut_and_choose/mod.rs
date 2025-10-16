@@ -1,3 +1,6 @@
+//! Cut-and-choose protocol primitives that implement the Setup and Evaluate
+//! phases described in `docs/gsv_spec.md`. The submodules expose garbler and
+//! evaluator roles plus utilities for ciphertext storage.
 use std::{
     fmt,
     ops::BitXor,
@@ -64,6 +67,7 @@ impl LabelCommitHasher for Sha256LabelCommitHasher {
     }
 }
 
+/// Per-wire label commitments used in both `Commit₁` and `Commit₂`.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct LabelCommit<H: Clone + Copy> {
     pub commit_label0: H,
@@ -71,6 +75,7 @@ pub struct LabelCommit<H: Clone + Copy> {
 }
 
 impl<H: Clone + Copy> LabelCommit<H> {
+    /// Hash both labels, optionally XOR-ing a nonce before hashing (spec Step 1.4).
     pub fn new<Hasher: LabelCommitHasher<Output = H>>(
         label0: S,
         label1: S,
@@ -122,7 +127,11 @@ pub(crate) fn write_commit_hex(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt:
     Ok(())
 }
 
-/// Protocol configuration shared by Garbler/Evaluator.
+/// Protocol configuration shared by Garbler and Evaluator.
+///
+/// Corresponds to the `(n, f, input)` tuple in `docs/gsv_spec.md`, where `n`
+/// is the total number of garbled instances and `f` is the size of the
+/// evaluation set selected during Step 2 (challenging).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config<I: CircuitInput> {
     total: usize,
@@ -131,6 +140,9 @@ pub struct Config<I: CircuitInput> {
 }
 
 impl<I: CircuitInput> Config<I> {
+    /// Create a new configuration with the total instance count, the number
+    /// of finalized instances, and the compressed circuit input shared between
+    /// garbler and evaluator.
     pub fn new(total: usize, to_finalize: usize, input: I) -> Self {
         Self {
             total,
@@ -139,14 +151,17 @@ impl<I: CircuitInput> Config<I> {
         }
     }
 
+    /// Total number of garbled circuits `n`.
     pub fn total(&self) -> usize {
         self.total
     }
 
+    /// Number of circuits `f` that will remain closed/finalized.
     pub fn to_finalize(&self) -> usize {
         self.to_finalize
     }
 
+    /// Immutable access to the shared circuit input payload.
     pub fn input(&self) -> &I {
         &self.input
     }

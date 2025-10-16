@@ -1,3 +1,7 @@
+//! Garbler-side orchestration for the cut-and-choose Setup phase described in
+//! `docs/gsv_spec.md`. The API mirrors the protocol steps: `commit_phase_one`
+//! produces the `Commit₁` payload, `commit_phase_two` covers `Commit₂`, and
+//! `open_commit` implements the challenge/opening flow.
 use std::{
     mem,
     thread::{self, JoinHandle},
@@ -60,22 +64,25 @@ impl<I: CircuitInput>
     }
 }
 
+/// `Commit₁(i)` payload containing ciphertext hash, per-wire input commits,
+/// output commits, and constant wire values (spec Step 1.2).
 #[derive(Clone, Debug, Serialize, Deserialize, Eq)]
 #[serde(bound = "H: LabelCommitHasher")]
-pub struct GarbledInstanceCommit<H: LabelCommitHasher = DefaultLabelCommitHasher> {
-    ciphertext_commit: CiphertextCommit,
-    input_labels_commit: Vec<LabelCommit<H::Output>>,
-    // Separate commits for output labels: one for label1 and one for label0
+pub struct CommitPhaseOne<H: LabelCommitHasher = DefaultLabelCommitHasher> {
+    ciphertext_hash: CiphertextCommit,
+    input_commitments: Vec<LabelCommit<H::Output>>,
+    /// Commitment to the active output label when the circuit output is `true`.
     output_label1_commit: H::Output,
+    /// Commitment to the active output label when the circuit output is `false`.
     output_label0_commit: H::Output,
     true_constant: u128,
     false_constant: u128,
 }
 
-impl<H: LabelCommitHasher> PartialEq for GarbledInstanceCommit<H> {
+impl<H: LabelCommitHasher> PartialEq for CommitPhaseOne<H> {
     fn eq(&self, other: &Self) -> bool {
-        self.ciphertext_commit == other.ciphertext_commit
-            && self.input_labels_commit == other.input_labels_commit
+        self.ciphertext_hash == other.ciphertext_hash
+            && self.input_commitments == other.input_commitments
             && self.output_label1_commit == other.output_label1_commit
             && self.output_label0_commit == other.output_label0_commit
             && self.true_constant == other.true_constant
@@ -83,35 +90,33 @@ impl<H: LabelCommitHasher> PartialEq for GarbledInstanceCommit<H> {
     }
 }
 
-impl<H: LabelCommitHasher> GarbledInstanceCommit<H> {
-    pub fn new(instance: &GarbledInstance, nonce: &Option<S>) -> Self {
+impl<H: LabelCommitHasher> CommitPhaseOne<H> {
+    /// Recompute the `Commit₁` payload (without nonce injection) for a garbled instance.
+    pub fn from_instance(instance: &GarbledInstance) -> Self {
         Self {
-            ciphertext_commit: instance.ciphertext_handler_result,
-            input_labels_commit: Self::commit_garbled_wires(&instance.input_wire_values, nonce),
-
-            output_label1_commit: Self::commit_label1(&instance.output_wire_values),
-
-            output_label0_commit: Self::commit_label0(&instance.output_wire_values),
-
+            ciphertext_hash: instance.ciphertext_handler_result,
+            input_commitments: commit_input_wires::<H>(&instance.input_wire_values, None),
+            output_label1_commit: commit_output_label1::<H>(&instance.output_wire_values),
+            output_label0_commit: commit_output_label0::<H>(&instance.output_wire_values),
             true_constant: instance.true_wire_constant.select(true).to_u128(),
             false_constant: instance.false_wire_constant.select(false).to_u128(),
         }
     }
 
-    pub fn commit_garbled_wires(
-        inputs: &[GarbledWire],
-        nonce: &Option<S>,
-    ) -> Vec<LabelCommit<H::Output>> {
-        inputs
-            .iter()
-            .map(|GarbledWire { label0, label1 }| {
-                LabelCommit::<H::Output>::new::<H>(*label0, *label1, nonce)
-            })
-            .collect()
+    pub fn ciphertext_hash(&self) -> CiphertextCommit {
+        self.ciphertext_hash
     }
 
-    fn commit_label1(input: &GarbledWire) -> H::Output {
-        commit_label_with::<H>(input.label1)
+    pub fn input_commitments(&self) -> &[LabelCommit<H::Output>] {
+        &self.input_commitments
+    }
+
+    pub fn output_commit_true(&self) -> H::Output {
+        self.output_label1_commit
+    }
+
+    pub fn output_commit_false(&self) -> H::Output {
+        self.output_label0_commit
     }
 
     pub fn true_constant(&self) -> u128 {
@@ -121,26 +126,51 @@ impl<H: LabelCommitHasher> GarbledInstanceCommit<H> {
     pub fn false_constant(&self) -> u128 {
         self.false_constant
     }
+}
 
-    fn commit_label0(input: &GarbledWire) -> H::Output {
-        commit_label_with::<H>(input.label0)
+/// `Commit₂(i)` payload containing nonce-blended per-wire input commitments
+/// (spec Step 1.4).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(bound = "H: LabelCommitHasher")]
+pub struct CommitPhaseTwo<H: LabelCommitHasher = DefaultLabelCommitHasher> {
+    input_commitments: Vec<LabelCommit<H::Output>>,
+}
+
+impl<H: LabelCommitHasher> CommitPhaseTwo<H> {
+    /// Recompute the `Commit₂` payload (with nonce injection) for a garbled instance.
+    pub fn from_instance(instance: &GarbledInstance, nonce: S) -> Self {
+        Self {
+            input_commitments: commit_input_wires::<H>(&instance.input_wire_values, Some(nonce)),
+        }
     }
 
-    pub fn output_label1_commit(&self) -> H::Output {
-        self.output_label1_commit
+    pub fn input_commitments(&self) -> &[LabelCommit<H::Output>] {
+        &self.input_commitments
     }
 
-    pub fn output_label0_commit(&self) -> H::Output {
-        self.output_label0_commit
+    pub fn into_inner(self) -> Vec<LabelCommit<H::Output>> {
+        self.input_commitments
     }
+}
 
-    pub fn ciphertext_commit(&self) -> CiphertextCommit {
-        self.ciphertext_commit
-    }
+fn commit_output_label1<H: LabelCommitHasher>(wire: &GarbledWire) -> H::Output {
+    commit_label_with::<H>(wire.label1)
+}
 
-    pub fn input_labels_commit(&self) -> &[LabelCommit<H::Output>] {
-        &self.input_labels_commit
-    }
+fn commit_output_label0<H: LabelCommitHasher>(wire: &GarbledWire) -> H::Output {
+    commit_label_with::<H>(wire.label0)
+}
+
+fn commit_input_wires<H: LabelCommitHasher>(
+    inputs: &[GarbledWire],
+    nonce: Option<S>,
+) -> Vec<LabelCommit<H::Output>> {
+    inputs
+        .iter()
+        .map(|GarbledWire { label0, label1 }| {
+            LabelCommit::<H::Output>::new::<H>(*label0, *label1, &nonce)
+        })
+        .collect()
 }
 
 pub enum OpenForInstance {
@@ -244,17 +274,25 @@ where
         }
     }
 
-    pub fn commit_with_hasher<HHasher>(
-        &self,
-        nonce: &Option<S>,
-    ) -> Vec<GarbledInstanceCommit<HHasher>>
+    /// Produce the `Commit₁` transcript for every garbled instance (spec Step 1.2).
+    pub fn commit_phase_one<HHasher>(&self) -> Vec<CommitPhaseOne<HHasher>>
     where
         HHasher: LabelCommitHasher,
     {
-        // Build commits in parallel; independent per instance
         self.instances
             .iter()
-            .map(|i| GarbledInstanceCommit::<HHasher>::new(i, nonce))
+            .map(CommitPhaseOne::<HHasher>::from_instance)
+            .collect()
+    }
+
+    /// Produce the `Commit₂` transcript (nonce-injected input commitments; spec Step 1.4).
+    pub fn commit_phase_two<HHasher>(&self, nonce: S) -> Vec<CommitPhaseTwo<HHasher>>
+    where
+        HHasher: LabelCommitHasher,
+    {
+        self.instances
+            .iter()
+            .map(|instance| CommitPhaseTwo::<HHasher>::from_instance(instance, nonce))
             .collect()
     }
 

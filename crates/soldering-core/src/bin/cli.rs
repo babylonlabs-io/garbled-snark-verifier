@@ -1,7 +1,6 @@
 use std::{
     env,
     error::Error,
-    ffi::OsString,
     io::{self, Read},
 };
 
@@ -33,8 +32,8 @@ fn run() -> Result<(), Box<dyn Error>> {
     let mut args = env::args_os();
     let _exe = args.next();
     match args.next() {
-        Some(cmd) if cmd == OsString::from("prove") => prove(),
-        Some(cmd) if cmd == OsString::from("verify") => verify(),
+        Some(cmd) if cmd == "prove" => prove(),
+        Some(cmd) if cmd == "verify" => verify(),
         _ => {
             eprintln!("usage: gsv-soldering-cli [prove|verify]\n  expect hex-encoded bincode payload on stdin");
             Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid command").into())

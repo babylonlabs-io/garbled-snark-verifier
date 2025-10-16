@@ -109,7 +109,7 @@ fn cut_and_choose_one_bit_e2e() {
     let mut garbler = Garbler::create(&mut rng, cfg_g, CAPACITY, one_bit_circuit);
 
     // First phase: commit without nonce
-    let first_commits = garbler.commit_with_hasher::<DefaultLabelCommitHasher>(&None);
+    let first_commits = garbler.commit_phase_one::<DefaultLabelCommitHasher>();
 
     // Evaluator chooses which instances to finalize with first commits
     let cfg_e = Config::new(total, finalize, OneBitGarblerInput);
@@ -120,15 +120,10 @@ fn cut_and_choose_one_bit_e2e() {
     let nonce = evaluator.get_nonce();
 
     // Second phase: commit with nonce
-    let second_commits = garbler.commit_with_hasher::<DefaultLabelCommitHasher>(&Some(nonce));
+    let second_commits = garbler.commit_phase_two::<DefaultLabelCommitHasher>(nonce);
 
     // Fill evaluator with second commits
-    evaluator.fill_second_commit(
-        second_commits
-            .iter()
-            .map(|commit| commit.input_labels_commit().to_vec())
-            .collect(),
-    );
+    evaluator.fill_second_commit(second_commits.clone());
 
     let finalize_indices: Vec<usize> = evaluator.finalized_indexes().to_vec();
 
@@ -382,7 +377,7 @@ fn cut_and_choose_fq12_mul_e2e() {
     let mut garbler = Garbler::create(&mut rng, cfg_g, CAPACITY, build_fq12_mul_eq_const);
 
     // First phase: commit without nonce
-    let first_commits = garbler.commit_with_hasher::<DefaultLabelCommitHasher>(&None);
+    let first_commits = garbler.commit_phase_one::<DefaultLabelCommitHasher>();
 
     // Evaluator chooses to finalize instances with first commits
     let cfg_e = Config::new(total, finalize, input.clone());
@@ -393,15 +388,10 @@ fn cut_and_choose_fq12_mul_e2e() {
     let nonce = evaluator.get_nonce();
 
     // Second phase: commit with nonce
-    let second_commits = garbler.commit_with_hasher::<DefaultLabelCommitHasher>(&Some(nonce));
+    let second_commits = garbler.commit_phase_two::<DefaultLabelCommitHasher>(nonce);
 
     // Fill evaluator with second commits
-    evaluator.fill_second_commit(
-        second_commits
-            .iter()
-            .map(|commit| commit.input_labels_commit().to_vec())
-            .collect(),
-    );
+    evaluator.fill_second_commit(second_commits.clone());
 
     let to_finalize = evaluator.finalized_indexes().to_vec().into_boxed_slice();
 
@@ -473,7 +463,7 @@ fn cut_and_choose_fq12_mul_e2e() {
         assert!(out.value, "a*b == prod_m should be true");
         assert_eq!(
             super::commit_label(out.active_label),
-            second_commits[idx].output_label1_commit()
+            first_commits[idx].output_commit_true()
         );
     }
 
@@ -507,7 +497,7 @@ fn cut_and_choose_fq12_mul_e2e() {
         assert!(!out.value, "a*b_alt == prod_m should be false");
         assert_eq!(
             super::commit_label(out.active_label),
-            second_commits[idx].output_label0_commit()
+            first_commits[idx].output_commit_false()
         );
     }
 }

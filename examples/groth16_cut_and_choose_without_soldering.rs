@@ -1,16 +1,18 @@
+//! Cut-and-choose example without soldering, following the Setup steps from
+//! `docs/gsv_spec.md` for the Groth16 verifier gadget.
 use std::{path::PathBuf, thread};
 
 use ark_ec::AffineRepr;
 use ark_ff::AdditiveGroup;
 use crossbeam::channel;
 use garbled_snark_verifier::{
-    EvaluatedWire, GarbledInstanceCommit, OpenForInstance, S,
+    CommitPhaseOne, CommitPhaseTwo, EvaluatedWire, OpenForInstance, S,
     ark::{
         self, Bn254, CircuitSpecificSetupSNARK, Groth16 as ArkGroth16, ProvingKey as ArkProvingKey,
         SNARK, UniformRand,
     },
     circuit::{CiphertextHandler, CiphertextSender, CircuitBuilder},
-    cut_and_choose::{FileCiphertextHandlerProvider, LabelCommit},
+    cut_and_choose::FileCiphertextHandlerProvider,
     garbled_groth16,
     groth16_cut_and_choose::{self as ccn, EvaluatorCaseInput},
 };
@@ -29,22 +31,24 @@ const IS_PRE_BOOLEAN_EXEC: bool = false;
 // Always use SHA-256 label commitments for this example
 type ExampleHasher = garbled_snark_verifier::cut_and_choose::Sha256LabelCommitHasher;
 
-enum G2EMsg {
-    // Garbler -> Evaluator: first commitments for all instances
-    FirstCommits(Vec<GarbledInstanceCommit<ExampleHasher>>),
-    // Garbler -> Evaluator: second commitments for all instances
-    SecondCommits(Vec<Vec<LabelCommit<[u8; 32]>>>),
-    // Garbler -> Evaluator: indices and seeds for instances to open
+/// Messages emitted by the Garbler during Setup (no soldering stage).
+enum SetupBroadcast {
+    /// Step 1.2 — `Commit₁` payloads for all instances.
+    Commit1(Vec<CommitPhaseOne<ExampleHasher>>),
+    /// Step 1.4 — `Commit₂` payloads (nonce-injected inputs).
+    Commit2(Vec<CommitPhaseTwo<ExampleHasher>>),
+    /// Step 3 — seeds for the opened set.
     OpenSeeds(Vec<(usize, ccn::Seed)>),
-    // Garbler -> Evaluator: fully built evaluator inputs for finalized instances
+    /// Evaluator inputs derived for finalized instances.
     OpenLabels(Vec<EvaluatorCaseInput>),
 }
 
-enum E2GMsg<CTH: 'static + Send + CiphertextHandler> {
-    // Evaluator -> Garbler: nonce for complete the commit
-    Nonce(u128),
-    // Evaluator -> Garbler: senders to forward ciphertexts for finalized instances
-    Challenge(Vec<(usize, CTH)>),
+/// Messages emitted by the Evaluator during Setup.
+enum SetupResponse<CTH: 'static + Send + CiphertextHandler> {
+    /// Step 1.3 — nonce hardening input commitments.
+    Commit2Nonce(S),
+    /// Step 2 — finalize challenge with ciphertext handlers.
+    FinalizeChallenge(Vec<(usize, CTH)>),
 }
 
 // Simple multiplicative circuit used to produce a valid Groth16 proof.
@@ -139,8 +143,8 @@ fn main() {
         GATES_PER_INSTANCE as f64 / 1_000_000_000.0
     );
 
-    let (g2e_tx, g2e_rx) = channel::unbounded::<G2EMsg>();
-    let (e2g_tx, e2g_rx) = channel::unbounded::<E2GMsg<CiphertextSender>>();
+    let (g2e_tx, g2e_rx) = channel::unbounded::<SetupBroadcast>();
+    let (e2g_tx, e2g_rx) = channel::unbounded::<SetupResponse<CiphertextSender>>();
 
     let garbler_cfg = ccn::Config::new(total, finalize, g_input.clone());
     let evaluator_cfg = garbler_cfg.clone();
@@ -174,8 +178,8 @@ fn run_garbler(
     pk: ArkProvingKey<Bn254>,
     circuit: DummyCircuit<ark::Fr>,
     public_input: ark::Fr,
-    g2e_tx: channel::Sender<G2EMsg>,
-    e2g_rx: channel::Receiver<E2GMsg<CiphertextSender>>,
+    g2e_tx: channel::Sender<SetupBroadcast>,
+    e2g_rx: channel::Receiver<SetupResponse<CiphertextSender>>,
 ) {
     let mut seed_rng = ChaCha20Rng::seed_from_u64(rand::thread_rng().r#gen());
 
@@ -187,28 +191,27 @@ fn run_garbler(
 
     let mut g = ccn::Garbler::create(&mut seed_rng, cfg.clone());
 
-    // First phase: commit without nonce
+    // Step 1.2 — Commit₁ without nonce
     g2e_tx
-        .send(G2EMsg::FirstCommits(
-            g.commit_with_hasher::<ExampleHasher>(None),
+        .send(SetupBroadcast::Commit1(
+            g.commit_phase_one::<ExampleHasher>(),
         ))
         .expect("send first commits");
 
-    let E2GMsg::Nonce(nonce) = e2g_rx.recv().expect("recv nonce") else {
+    let SetupResponse::Commit2Nonce(nonce) = e2g_rx.recv().expect("recv nonce") else {
         panic!("unexpected message; expected nonce")
     };
 
-    // Second phase: commit with nonce
+    // Step 1.4 — Commit₂ with nonce-injected inputs
     g2e_tx
-        .send(G2EMsg::SecondCommits(
-            g.commit_with_hasher::<ExampleHasher>(Some(S::from_u128(nonce)))
-                .into_iter()
-                .map(|commit| commit.input_labels_commit().to_vec())
-                .collect(),
+        .send(SetupBroadcast::Commit2(
+            g.commit_phase_two::<ExampleHasher>(nonce),
         ))
         .expect("send second commits");
 
-    let E2GMsg::Challenge(finalize_senders) = e2g_rx.recv().expect("recv finalize senders") else {
+    let SetupResponse::FinalizeChallenge(finalize_senders) =
+        e2g_rx.recv().expect("recv finalize senders")
+    else {
         panic!("unexpected message; expected challenge")
     };
 
@@ -226,7 +229,7 @@ fn run_garbler(
     }
 
     g2e_tx
-        .send(G2EMsg::OpenSeeds(seeds))
+        .send(SetupBroadcast::OpenSeeds(seeds))
         .expect("send open_result");
 
     // Single-machine demo: run stages sequentially to avoid resource contention.
@@ -285,21 +288,21 @@ fn run_garbler(
 
     // Send fully built evaluator inputs for all finalized instances
     g2e_tx
-        .send(G2EMsg::OpenLabels(fin_inputs))
+        .send(SetupBroadcast::OpenLabels(fin_inputs))
         .expect("send finalized evaluator inputs");
 }
 
 fn run_evaluator(
     cfg: ccn::Config,
     out_dir: PathBuf,
-    g2e_rx: channel::Receiver<G2EMsg>,
-    e2g_tx: channel::Sender<E2GMsg<CiphertextSender>>,
+    g2e_rx: channel::Receiver<SetupBroadcast>,
+    e2g_tx: channel::Sender<SetupResponse<CiphertextSender>>,
 ) -> Vec<(usize, EvaluatedWire)> {
     let mut rng = ChaCha20Rng::seed_from_u64(rand::thread_rng().r#gen());
 
     let finalize = cfg.to_finalize();
 
-    let G2EMsg::FirstCommits(first_commits) = g2e_rx.recv().expect("recv first commits") else {
+    let SetupBroadcast::Commit1(first_commits) = g2e_rx.recv().expect("recv first commits") else {
         panic!("unexpected message; expected first commits")
     };
 
@@ -308,10 +311,11 @@ fn run_evaluator(
     let nonce = eval.get_nonce();
 
     e2g_tx
-        .send(E2GMsg::Nonce(nonce.to_u128()))
+        .send(SetupResponse::Commit2Nonce(nonce))
         .expect("send nonce to garbler");
 
-    let G2EMsg::SecondCommits(second_commits) = g2e_rx.recv().expect("recv second commits") else {
+    let SetupBroadcast::Commit2(second_commits) = g2e_rx.recv().expect("recv second commits")
+    else {
         panic!("unexpected message; expected second commits")
     };
 
@@ -339,10 +343,10 @@ fn run_evaluator(
     );
 
     e2g_tx
-        .send(E2GMsg::Challenge(senders))
+        .send(SetupResponse::FinalizeChallenge(senders))
         .expect("send finalize senders to garbler");
 
-    let G2EMsg::OpenSeeds(open_result) = g2e_rx.recv().expect("recv open_result") else {
+    let SetupBroadcast::OpenSeeds(open_result) = g2e_rx.recv().expect("recv open_result") else {
         panic!("unexpected message; expected open seeds")
     };
 
@@ -356,7 +360,7 @@ fn run_evaluator(
     .expect("regarbling checks");
 
     // Legacy flow: receive full inputs for all finalized instances and evaluate
-    let Ok(G2EMsg::OpenLabels(cases)) = g2e_rx.recv() else {
+    let Ok(SetupBroadcast::OpenLabels(cases)) = g2e_rx.recv() else {
         panic!("unexpected message; expected finalized inputs")
     };
     eval.evaluate_from(&out_dir, cases).unwrap()

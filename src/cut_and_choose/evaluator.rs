@@ -1,3 +1,7 @@
+//! Evaluator-side state machine for the cut-and-choose Setup phase (see
+//! `docs/gsv_spec.md`). The `Evaluator` mirrors the spec: it consumes `Commit₁`
+//! (`commit_phase_one`) data, samples the challenge set, requests `Commit₂`, and
+//! drives regarbling/opening plus soldering verification.
 use std::{error, fmt, mem};
 
 use itertools::*;
@@ -6,7 +10,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{error, info};
 
-use super::{Config, garbler::GarbledInstanceCommit};
+use super::{
+    Config,
+    garbler::{CommitPhaseOne, CommitPhaseTwo},
+};
 use crate::{
     AESAccumulatingHash, AesNiHasher, EvaluatedWire, GarbleMode, GarbledWire, S, WireId,
     circuit::{
@@ -30,22 +37,22 @@ use crate::{
 enum Stage<H: LabelCommitHasher> {
     #[default]
     Empty,
-    Created(Vec<GarbledInstanceCommit<H>>),
+    Created(Vec<CommitPhaseOne<H>>),
     Filled {
-        first: Vec<GarbledInstanceCommit<H>>,
-        second: Vec<Vec<LabelCommit<H::Output>>>,
+        first: Vec<CommitPhaseOne<H>>,
+        second: Vec<CommitPhaseTwo<H>>,
         regarbled: bool,
     },
     #[cfg(feature = "sp1-soldering")]
     Soldered {
-        first: Vec<GarbledInstanceCommit<H>>,
-        second: Vec<Vec<LabelCommit<H::Output>>>,
+        first: Vec<CommitPhaseOne<H>>,
+        second: Vec<CommitPhaseTwo<H>>,
         soldering_deltas: Vec<Vec<(S, S)>>,
     },
 }
 
 impl<H: LabelCommitHasher> Stage<H> {
-    fn get_commit_if_ready(&self) -> Option<&[GarbledInstanceCommit<H>]> {
+    fn get_commit_if_ready(&self) -> Option<&[CommitPhaseOne<H>]> {
         match self {
             Stage::Empty => None,
             Stage::Created(_) => None,
@@ -88,11 +95,7 @@ where
     H: LabelCommitHasher,
 {
     // Generate `to_finalize` with `rng` based on data on `Config`
-    pub fn create(
-        mut rng: impl Rng,
-        config: Config<I>,
-        commits: Vec<GarbledInstanceCommit<H>>,
-    ) -> Self {
+    pub fn create(mut rng: impl Rng, config: Config<I>, commits: Vec<CommitPhaseOne<H>>) -> Self {
         assert!(
             config.to_finalize <= config.total,
             "to_finalize must be <= total"
@@ -116,7 +119,7 @@ where
         }
     }
 
-    pub fn fill_second_commit(&mut self, commits: Vec<Vec<LabelCommit<H::Output>>>) {
+    pub fn fill_second_commit(&mut self, commits: Vec<CommitPhaseTwo<H>>) {
         let first = match &mut self.stage {
             Stage::Created(first) => mem::take(first),
             _ => panic!("Can't fill second commit for filled `Evaluator`"),
@@ -202,7 +205,7 @@ where
 
                         let computed_commit: CiphertextCommit = handler.finalize().into();
 
-                        if computed_commit != first_commit.ciphertext_commit() {
+                        if computed_commit != first_commit.ciphertext_hash() {
                             error!("ciphertext corrupted");
                             return Err(());
                         }
@@ -238,15 +241,18 @@ where
                         );
 
                         let res = res.into();
-                        let regarbling_first_commit = GarbledInstanceCommit::<H>::new(&res, &None);
+                        let regarbling_first_commit = CommitPhaseOne::<H>::from_instance(&res);
 
                         if &regarbling_first_commit != first_commit {
                             error!("regarbling failed, first commit not equal");
                             return Err(());
                         }
 
-                        if GarbledInstanceCommit::<H>::new(&res, &Some(nonce)).input_labels_commit()
-                            != second_commit
+                        let regarbling_second_commit =
+                            CommitPhaseTwo::<H>::from_instance(&res, nonce);
+
+                        if regarbling_second_commit.input_commitments()
+                            != second_commit.input_commitments()
                         {
                             error!("regarbling failed, second commit not equal");
                             return Err(());
@@ -441,7 +447,7 @@ where
 
                     let commit = &commits[index];
 
-                    let expected_input_commits = commit.input_labels_commit();
+                    let expected_input_commits = commit.input_commitments();
 
                     let source = match ciphertext_repo.source_for(index) {
                         Ok(src) => src,
@@ -499,11 +505,12 @@ where
                         }
                     }
 
-                    let new_ciphertext_commit: CiphertextCommit = result.ciphertext_handler_result.into();
-                    if new_ciphertext_commit != commit.ciphertext_commit() {
+                    let new_ciphertext_commit: CiphertextCommit =
+                        result.ciphertext_handler_result.into();
+                    if new_ciphertext_commit != commit.ciphertext_hash() {
                         return Err(ConsistencyError::CiphertextMismatch {
                             index,
-                            expected: commit.ciphertext_commit(),
+                            expected: commit.ciphertext_hash(),
                             actual: new_ciphertext_commit,
                         });
                     }
@@ -511,9 +518,9 @@ where
                     let output_hash = commit_label_with::<H>(result.output_value.active_label);
 
                     let expected_output_hash = if result.output_value.value {
-                        commit.output_label1_commit()
+                        commit.output_commit_true()
                     } else {
-                        commit.output_label0_commit()
+                        commit.output_commit_false()
                     };
 
                     if output_hash != expected_output_hash {
@@ -668,7 +675,7 @@ where
         let soldered_instances_indexes = &self.to_finalize[1..];
 
         // Shape checks
-        let expected_wires = first_commits[base_idx].input_labels_commit().len();
+        let expected_wires = first_commits[base_idx].input_commitments().len();
         if verified_public_params.base_commitment.len() != expected_wires {
             return Err(SolderingCheckError::ShapeMismatch(
                 "base commitment wire count",
@@ -685,7 +692,7 @@ where
             ));
         }
         for (j, &inst_idx) in soldered_instances_indexes.iter().enumerate() {
-            if first_commits[inst_idx].input_labels_commit().len() != expected_wires
+            if first_commits[inst_idx].input_commitments().len() != expected_wires
                 || verified_public_params.commitments[j].len() != expected_wires
                 || verified_public_params.deltas[j].len() != expected_wires
             {
@@ -704,7 +711,7 @@ where
 
         // Compare base instance per-wire commitments
         let base_local = &first_commits[base_idx];
-        for (wire_idx, base_pair) in base_local.input_labels_commit().iter().enumerate() {
+        for (wire_idx, base_pair) in base_local.input_commitments().iter().enumerate() {
             let [exp0, exp1] = verified_public_params.base_commitment[wire_idx];
 
             if base_pair.commit_label0 != exp0 {
@@ -733,7 +740,7 @@ where
         for (wire_idx, (nonce_commit, nonce_local_commit)) in verified_public_params
             .base_nonce_commitment
             .iter()
-            .zip(base_second.iter())
+            .zip(base_second.input_commitments().iter())
             .enumerate()
         {
             // Verify label0 with nonce
@@ -761,7 +768,7 @@ where
         for (j, &inst_idx) in soldered_instances_indexes.iter().enumerate() {
             let local = &first_commits[inst_idx];
 
-            for (wire_idx, local_pair) in local.input_labels_commit().iter().enumerate() {
+            for (wire_idx, local_pair) in local.input_commitments().iter().enumerate() {
                 let (exp0, exp1) = verified_public_params.commitments[j][wire_idx];
 
                 if local_pair.commit_label0 != exp0 {
