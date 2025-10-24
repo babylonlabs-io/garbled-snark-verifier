@@ -103,6 +103,24 @@ impl<H: LabelCommitHasher> CommitPhaseOne<H> {
         }
     }
 
+    pub fn new(
+        ciphertext_hash: CiphertextCommit,
+        input_commitments: Vec<LabelCommit<H::Output>>,
+        output_label1_commit: H::Output,
+        output_label0_commit: H::Output,
+        true_constant: u128,
+        false_constant: u128,
+    ) -> Self {
+        Self {
+            ciphertext_hash,
+            input_commitments,
+            output_label1_commit,
+            output_label0_commit,
+            true_constant,
+            false_constant,
+        }
+    }
+
     pub fn ciphertext_hash(&self) -> CiphertextCommit {
         self.ciphertext_hash
     }
@@ -142,6 +160,10 @@ impl<H: LabelCommitHasher> CommitPhaseTwo<H> {
         Self {
             input_commitments: commit_input_wires::<H>(&instance.input_wire_values, Some(nonce)),
         }
+    }
+
+    pub fn new(input_commitments: Vec<LabelCommit<H::Output>>) -> Self {
+        Self { input_commitments }
     }
 
     pub fn input_commitments(&self) -> &[LabelCommit<H::Output>] {
