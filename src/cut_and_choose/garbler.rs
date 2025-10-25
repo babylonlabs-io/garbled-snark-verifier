@@ -2,6 +2,8 @@
 //! `docs/gsv_spec.md`. The API mirrors the protocol steps: `commit_phase_one`
 //! produces the `Commit₁` payload, `commit_phase_two` covers `Commit₂`, and
 //! `open_commit` implements the challenge/opening flow.
+#[cfg(test)]
+use std::{fs, path::Path};
 use std::{
     mem,
     thread::{self, JoinHandle},
@@ -297,6 +299,108 @@ where
             config,
             nonce: None,
         }
+    }
+
+    /// Test-only constructor that loads cached garbled instances by seed, or garbles and caches.
+    ///
+    /// Behavior per seed in `seeds`:
+    /// - If `{dir}/{seed}.json` exists and parses, it is used.
+    /// - Otherwise, the instance is garbled and persisted atomically to that path.
+    ///
+    /// Returns a Garbler with `stage` populated with the same `seeds` for later regarbling.
+    #[cfg(test)]
+    pub fn create_with_seeds_or_cache<F>(
+        seeds: Box<[Seed]>,
+        dir: impl AsRef<Path>,
+        config: Config<I>,
+        live_capacity: usize,
+        builder: F,
+    ) -> std::io::Result<Self>
+    where
+        F: Fn(
+                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+                &I::WireRepr,
+            ) -> WireId
+            + Send
+            + Sync
+            + Copy,
+    {
+        assert_eq!(seeds.len(), config.total);
+
+        let dir = dir.as_ref().to_path_buf();
+        fs::create_dir_all(&dir)?;
+
+        // First pass: read cached instances sequentially; collect misses for garbling.
+        let mut instances: Vec<Option<GarbledInstance>> = vec![None; seeds.len()];
+        let mut to_garble: Vec<(usize, Seed)> = Vec::new();
+
+        for (index, &seed) in seeds.iter().enumerate() {
+            let file = dir.join(format!("{seed}.json"));
+            match fs::read(&file)
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+            {
+                Some(inst) => {
+                    info!(instance = index, seed, "Loaded cached garbled instance");
+                    instances[index] = Some(inst);
+                }
+                None => to_garble.push((index, seed)),
+            }
+        }
+
+        if !to_garble.is_empty() {
+            // Parallel garbling for misses; persist atomically.
+            let produced = super::get_optimized_pool().install(|| {
+                to_garble
+                    .par_iter()
+                    .map(
+                        |&(index, seed)| -> std::io::Result<(usize, GarbledInstance)> {
+                            let inputs = config.input.clone();
+                            let hasher = AESAccumulatingHash::default();
+                            let _span =
+                                tracing::info_span!("garble", instance = index, seed).entered();
+                            info!("Garbling (cache miss or parse error)");
+
+                            let res: StreamingResult<
+                                GarbleMode<AesNiHasher, AESAccumulatingHash>,
+                                I,
+                                GarbledWire,
+                            > = CircuitBuilder::streaming_garbling(
+                                inputs,
+                                live_capacity,
+                                seed,
+                                hasher,
+                                builder,
+                            );
+
+                            let inst = GarbledInstance::from(res);
+                            let file = dir.join(format!("{seed}.json"));
+                            let tmp = dir.join(format!("{seed}.json.tmp"));
+                            serde_json::to_writer(fs::File::create(&tmp)?, &inst)?;
+                            fs::rename(&tmp, &file)?;
+                            Ok((index, inst))
+                        },
+                    )
+                    .collect::<Result<Vec<_>, _>>()
+            })?;
+
+            for (idx, inst) in produced.into_iter() {
+                instances[idx] = Some(inst);
+            }
+        }
+
+        let instances = instances
+            .into_iter()
+            .map(|opt| opt.expect("instance present after load/garble"))
+            .collect();
+
+        Ok(Self {
+            stage: GarblerStage::Generating { seeds },
+            instances,
+            live_capacity,
+            config,
+            nonce: None,
+        })
     }
 
     /// Produce the `Commit₁` transcript for every garbled instance (spec Step 1.2).
