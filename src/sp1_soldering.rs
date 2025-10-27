@@ -1,6 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
 use rkyv::util::AlignedVec;
+use serde::{Deserialize, Serialize};
 use sp1_core_executor::SP1ContextBuilder;
 use sp1_core_machine::io::SP1Stdin;
 use sp1_prover::{
@@ -27,7 +28,7 @@ pub fn elf() -> &'static [u8] {
     include_bytes!(env!("SP1_ELF_sp1-soldering-guest"))
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SolderingProof {
     pub proof: Groth16Bn254Proof,
     pub deltas: Vec<Vec<(u128, u128)>>,

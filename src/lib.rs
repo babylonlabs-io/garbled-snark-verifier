@@ -48,13 +48,74 @@ pub use math::*;
 
 pub use crate::circuit::modes::GarbleMode;
 
-#[cfg(test)]
+#[cfg(feature = "test-utils")]
 pub mod test_utils {
+    use ark_bn254::Bn254;
     use rand::SeedableRng;
     use rand_chacha::ChaCha20Rng;
 
     pub fn trng() -> ChaCha20Rng {
         ChaCha20Rng::seed_from_u64(0)
+    }
+
+    use ark_ff::UniformRand;
+    use ark_snark::CircuitSpecificSetupSNARK;
+
+    use crate::ark;
+
+    #[derive(Copy, Clone)]
+    struct DummyCircuit<F: ark::PrimeField> {
+        pub a: Option<F>,
+        pub b: Option<F>,
+        pub num_variables: usize,
+        pub num_constraints: usize,
+    }
+
+    impl<F: ark::PrimeField> ark::ConstraintSynthesizer<F> for DummyCircuit<F> {
+        fn generate_constraints(
+            self,
+            cs: ark::ConstraintSystemRef<F>,
+        ) -> Result<(), ark::SynthesisError> {
+            let a =
+                cs.new_witness_variable(|| self.a.ok_or(ark::SynthesisError::AssignmentMissing))?;
+            let b =
+                cs.new_witness_variable(|| self.b.ok_or(ark::SynthesisError::AssignmentMissing))?;
+            let c = cs.new_input_variable(|| {
+                let a = self.a.ok_or(ark::SynthesisError::AssignmentMissing)?;
+                let b = self.b.ok_or(ark::SynthesisError::AssignmentMissing)?;
+                Ok(a * b)
+            })?;
+
+            // pad witnesses
+            for _ in 0..(self.num_variables - 3) {
+                let _ = cs.new_witness_variable(|| {
+                    self.a.ok_or(ark::SynthesisError::AssignmentMissing)
+                })?;
+            }
+
+            // repeat the same multiplicative constraint
+            for _ in 0..self.num_constraints - 1 {
+                cs.enforce_constraint(ark::lc!() + a, ark::lc!() + b, ark::lc!() + c)?;
+            }
+
+            // final no-op constraint keeps ark-relations happy
+            cs.enforce_constraint(ark::lc!(), ark::lc!(), ark::lc!())?;
+            Ok(())
+        }
+    }
+
+    pub fn dummy_vk() -> ark_groth16::VerifyingKey<Bn254> {
+        let k = 6; // 2^k constraints
+        let mut rng = ChaCha20Rng::seed_from_u64(12345);
+        let circuit = DummyCircuit::<ark::Fr> {
+            a: Some(ark::Fr::rand(&mut rng)),
+            b: Some(ark::Fr::rand(&mut rng)),
+            num_variables: 10,
+            num_constraints: 1 << k,
+        };
+
+        let (_pk, vk) = ark::Groth16::<ark::Bn254>::setup(circuit, &mut rng).expect("setup");
+        vk
     }
 }
 

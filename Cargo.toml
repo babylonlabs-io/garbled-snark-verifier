@@ -17,8 +17,9 @@ description = "Garbled-circuit SNARK verifier using Groth16 (BN254), with reusab
 resolver = "2"
 
 [features]
-default = ["tracing_max_level", "tracing_scopes", "sp1-soldering"]
+default = ["tracing_max_level", "tracing_scopes", "sp1-soldering", "test-utils"]
 sp1-soldering = ["sp1-prover", "sp1-core-machine", "sp1-core-executor", "sp1-primitives", "sp1-stark"]
+test-utils = []
 
 tracing_max_level = ["tracing/max_level_trace", "tracing/release_max_level_info"]
 tracing_scopes = []
