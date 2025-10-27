@@ -94,6 +94,11 @@ where
     I: Serialize + DeserializeOwned,
     H: LabelCommitHasher,
 {
+    /// Immutable access to the protocol configuration.
+    pub fn config(&self) -> &Config<I> {
+        &self.config
+    }
+
     // Generate `to_finalize` with `rng` based on data on `Config`
     pub fn create(mut rng: impl Rng, config: Config<I>, commits: Vec<CommitPhaseOne<H>>) -> Self {
         assert!(
@@ -315,7 +320,7 @@ where
             + Sync
             + Copy,
     {
-        test_utils::run_regarbling_test(
+        test_utils::run_regarbling_test_only(
             self,
             ciphertext_sources_provider,
             ciphertext_handler_provider,
@@ -339,7 +344,7 @@ pub mod test_utils {
     };
 
     #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn run_regarbling_test<I, H, CSourceProvider, CHandlerProvider, F>(
+    pub fn run_regarbling_test_only<I, H, CSourceProvider, CHandlerProvider, F>(
         evaluator: &mut Evaluator<I, H>,
         ciphertext_sources_provider: &CSourceProvider,
         ciphertext_handler_provider: &CHandlerProvider,
@@ -378,12 +383,6 @@ pub mod test_utils {
         };
 
         let to_finalize: HashSet<usize> = evaluator.to_finalize.iter().copied().collect();
-        let seeds = evaluator
-            .to_finalize
-            .iter()
-            .map(|index| (*index, *index as u64))
-            .collect::<Vec<(usize, Seed)>>();
-        let seeds_arc = Arc::new(seeds);
         let inputs_template = evaluator.config.input.clone();
         let nonce = evaluator.nonce;
 
@@ -404,10 +403,10 @@ pub mod test_utils {
                 .par_iter()
                 .zip(second.par_iter())
                 .enumerate()
-                .map(|(index, (first_commit, second_commit))| {
-                    if to_finalize.contains(&index) {
+                .map(|(index_and_seed, (first_commit, second_commit))| {
+                    if to_finalize.contains(&index_and_seed) {
                         verify_ciphertext_commit::<H, _, _>(
-                            index,
+                            index_and_seed,
                             first_commit,
                             ciphertext_sources_provider,
                             ciphertext_handler_provider,
@@ -415,14 +414,13 @@ pub mod test_utils {
                     } else {
                         let cache_path = cache_dir.as_ref().map(|arc| arc.as_path());
                         check_or_regarble_cached(
-                            index,
+                            index_and_seed,
                             first_commit,
                             second_commit,
                             nonce,
                             &inputs_template,
                             live_capacity,
                             builder,
-                            &seeds_arc,
                             cache_path,
                         )
                     }
@@ -479,14 +477,13 @@ pub mod test_utils {
 
     #[allow(clippy::too_many_arguments)]
     fn check_or_regarble_cached<I, H, F>(
-        index: usize,
+        index_and_seed: usize,
         first_commit: &CommitPhaseOne<H>,
         second_commit: &CommitPhaseTwo<H>,
         nonce: S,
         inputs_template: &I,
         live_capacity: usize,
         builder: F,
-        seeds: &Arc<Vec<(usize, Seed)>>,
         cache_dir: Option<&Path>,
     ) -> Result<(), ()>
     where
@@ -505,18 +502,14 @@ pub mod test_utils {
             + Sync
             + Copy,
     {
-        let Some(seed) = seeds.iter().find_map(|(i, s)| (i == &index).then_some(*s)) else {
-            error!(index, "failed to find seed");
-            return Err(());
-        };
-
         if let Some(dir) = cache_dir {
-            let path = dir.join(format!("{seed}.json"));
+            let path = dir.join(format!("{index_and_seed}.json"));
             if let Ok(bytes) = fs::read(&path)
                 && let Ok(instance) = serde_json::from_slice::<GarbledInstance>(&bytes)
             {
                 let c1 = CommitPhaseOne::<H>::from_instance(&instance);
                 let c2 = CommitPhaseTwo::<H>::from_instance(&instance, nonce);
+
                 if c1 == *first_commit
                     && c2.input_commitments() == second_commit.input_commitments()
                 {
@@ -525,7 +518,7 @@ pub mod test_utils {
             }
         }
 
-        let span = tracing::info_span!("regarble", instance = index);
+        let span = tracing::info_span!("regarble", instance = index_and_seed);
         let _enter = span.enter();
         info!("Starting regarbling of circuit (cut-and-choose)");
 
@@ -533,41 +526,51 @@ pub mod test_utils {
         let hasher = AESAccumulatingHash::default();
 
         let res: StreamingResult<GarbleMode<AesNiHasher, AESAccumulatingHash>, I, GarbledWire> =
-            CircuitBuilder::streaming_garbling(inputs, live_capacity, seed, hasher, builder);
+            CircuitBuilder::streaming_garbling(
+                inputs,
+                live_capacity,
+                index_and_seed as Seed,
+                hasher,
+                builder,
+            );
 
         let instance: GarbledInstance = res.into();
 
         let recomputed_first = CommitPhaseOne::<H>::from_instance(&instance);
         if recomputed_first != *first_commit {
-            error!(index, "regarbling failed, first commit mismatch");
+            error!(index_and_seed, "regarbling failed, first commit mismatch");
             return Err(());
         }
 
         let recomputed_second = CommitPhaseTwo::<H>::from_instance(&instance, nonce);
         if recomputed_second.input_commitments() != second_commit.input_commitments() {
-            error!(index, "regarbling failed, second commit mismatch");
+            error!(index_and_seed, "regarbling failed, second commit mismatch");
             return Err(());
         }
 
         if let Some(dir) = cache_dir {
-            let path = dir.join(format!("{seed}.json"));
+            let path = dir.join(format!("{index_and_seed}.json"));
             let tmp = path.with_extension("tmp");
 
             let buf = match serde_json::to_vec(&instance) {
                 Ok(buf) => buf,
                 Err(err) => {
-                    error!(index, ?err, "failed to serialize cached garbled instance");
+                    error!(
+                        index_and_seed,
+                        ?err,
+                        "failed to serialize cached garbled instance"
+                    );
                     return Err(());
                 }
             };
 
             if let Err(err) = fs::write(&tmp, &buf) {
-                error!(index, path = %tmp.display(), ?err, "failed to write cached garbled instance");
+                error!(index_and_seed, path = %tmp.display(), ?err, "failed to write cached garbled instance");
                 return Err(());
             }
 
             if let Err(err) = fs::rename(&tmp, &path) {
-                error!(index, path = %path.display(), ?err, "failed to persist cached garbled instance");
+                error!(index_and_seed, path = %path.display(), ?err, "failed to persist cached garbled instance");
                 return Err(());
             }
         }

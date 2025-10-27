@@ -424,6 +424,7 @@ where
         let nonce = self
             .nonce
             .expect("Nonce must be set before calling do_soldering");
+
         let GarblerStage::PreparedForEval { indexes_to_eval } = &self.stage else {
             panic!("Garbler not ready to soldering")
         };
@@ -556,11 +557,12 @@ pub mod test_utils {
                     );
 
                     let instance = GarbledInstance::from(res);
-                    let tmp = path.with_extension("tmp");
+
                     let buf = serde_json::to_vec(&instance)
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-                    fs::write(&tmp, &buf)?;
-                    fs::rename(&tmp, &path)?;
+
+                    fs::write(&path, &buf)?;
+
                     Ok(instance)
                 })
                 .collect::<Result<Vec<_>, io::Error>>()
@@ -593,6 +595,7 @@ pub mod test_utils {
         let nonce = garbler
             .nonce
             .expect("Nonce must be set before calling do_soldering");
+
         let GarblerStage::PreparedForEval { indexes_to_eval } = &garbler.stage else {
             panic!("Garbler not ready to soldering");
         };

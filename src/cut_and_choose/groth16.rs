@@ -254,6 +254,52 @@ impl<H: LabelCommitHasher> Evaluator<H> {
             cache_dir,
         )
     }
+
+    /// Test-only convenience: regarble with on-demand cache warmup; no stream required.
+    ///
+    /// Uses `test_utils::PrecomputedCommits` to provide expected ciphertext commits,
+    /// warming the cache at `cache_dir` as needed. For the ciphertext source, a noop
+    /// provider is used so finalized indexes do not require an actual stream.
+    #[cfg(feature = "test-utils")]
+    #[allow(clippy::result_unit_err)]
+    pub fn run_regarbling_test_only_default(
+        &mut self,
+        cache_dir: impl AsRef<std::path::Path>,
+    ) -> Result<(), ()> {
+        let commits =
+            test_utils::PrecomputedCommits::new(cache_dir.as_ref(), self.inner.config().clone());
+        let noop = test_utils::NoopCiphertext;
+        self.inner.run_regarbling_cached(
+            &noop,
+            &commits,
+            DEFAULT_CAPACITY,
+            garbled_groth16::verify_compressed,
+            Some(cache_dir.as_ref()),
+        )
+    }
+
+    /// Test-only convenience: regarble with optional external ciphertext stream and
+    /// on-demand cache warmup for commits.
+    #[cfg(feature = "test-utils")]
+    #[allow(clippy::result_unit_err)]
+    pub fn run_regarbling_test_only_with_stream<CSourceProvider>(
+        &mut self,
+        ciphertext_sources_provider: &CSourceProvider,
+        cache_dir: impl AsRef<std::path::Path>,
+    ) -> Result<(), ()>
+    where
+        CSourceProvider: CiphertextSourceProvider + Send + Sync,
+    {
+        let commits =
+            test_utils::PrecomputedCommits::new(cache_dir.as_ref(), self.inner.config().clone());
+        self.inner.run_regarbling_cached(
+            ciphertext_sources_provider,
+            &commits,
+            DEFAULT_CAPACITY,
+            garbled_groth16::verify_compressed,
+            Some(cache_dir.as_ref()),
+        )
+    }
 }
 
 // Implement SolderInput to allow creating derived instances from base instance with deltas
@@ -348,5 +394,145 @@ impl Evaluator<generic::Sha256LabelCommitHasher> {
             DEFAULT_CAPACITY,
             garbled_groth16::verify_compressed,
         )
+    }
+}
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils {
+    use std::{
+        fs, io,
+        path::{Path, PathBuf},
+    };
+
+    use serde_json;
+    use tracing::info;
+
+    use super::{Config, DEFAULT_CAPACITY, garbled_groth16};
+    use crate::{
+        AESAccumulatingHash, AesNiHasher, GarbleMode, GarbledWire, S,
+        circuit::{
+            CiphertextHandler, CircuitBuilder, StreamingResult, ciphertext_source::CiphertextSource,
+        },
+        cut_and_choose::{self as generic},
+    };
+
+    /// No-op ciphertext stream provider for tests that don't supply a real stream.
+    #[derive(Clone, Copy, Default)]
+    pub struct NoCiphertextSource;
+
+    impl CiphertextSource for NoCiphertextSource {
+        type Result = ();
+
+        fn recv(&mut self) -> Option<S> {
+            None
+        }
+
+        fn finalize(&self) -> Self::Result {}
+    }
+
+    #[derive(Clone, Copy, Default)]
+    pub struct NoopCiphertext;
+
+    impl generic::CiphertextSourceProvider for NoopCiphertext {
+        type Source = NoCiphertextSource;
+        type Error = ();
+
+        fn source_for(&self, _index: usize) -> Result<Self::Source, Self::Error> {
+            Ok(NoCiphertextSource)
+        }
+    }
+
+    /// Precomputed commit handler that simply returns a fixed commit.
+    #[derive(Clone, Copy)]
+    pub struct PrecomputedCommit([u8; 16]);
+
+    impl CiphertextHandler for PrecomputedCommit {
+        type Result = [u8; 16];
+
+        fn handle(&mut self, _ct: S) {}
+
+        fn finalize(self) -> Self::Result {
+            self.0
+        }
+    }
+
+    /// Test-only provider of ciphertext commits, backed by on-disk cache
+    /// with on-demand garbling on cache miss.
+    pub struct PrecomputedCommits {
+        dir: PathBuf,
+        config: Config,
+        capacity: usize,
+    }
+
+    impl PrecomputedCommits {
+        pub fn new(dir: impl AsRef<Path>, config: Config) -> Self {
+            Self {
+                dir: dir.as_ref().to_path_buf(),
+                config,
+                capacity: DEFAULT_CAPACITY,
+            }
+        }
+
+        #[allow(dead_code)]
+        pub fn with_capacity(dir: impl AsRef<Path>, config: Config, capacity: usize) -> Self {
+            Self {
+                dir: dir.as_ref().to_path_buf(),
+                config,
+                capacity,
+            }
+        }
+
+        fn load_or_garble_one(&self, index: usize) -> io::Result<generic::GarbledInstance> {
+            let seed = index as u64;
+            let path = self.dir.join(format!("{seed}.json"));
+
+            if let Ok(bytes) = fs::read(&path)
+                && let Ok(instance) = serde_json::from_slice::<generic::GarbledInstance>(&bytes)
+            {
+                info!(instance = index, seed, "Loaded cached garbled instance");
+                return Ok(instance);
+            }
+
+            fs::create_dir_all(&self.dir)?;
+
+            let inputs = self.config.input().clone();
+            let hasher = AESAccumulatingHash::default();
+            let _span = tracing::info_span!("garble", instance = index, seed).entered();
+            info!("Garbling (cache miss or parse error)");
+
+            let res: StreamingResult<
+                GarbleMode<AesNiHasher, AESAccumulatingHash>,
+                garbled_groth16::GarblerCompressedInput,
+                GarbledWire,
+            > = CircuitBuilder::streaming_garbling(
+                inputs,
+                self.capacity,
+                seed,
+                hasher,
+                garbled_groth16::verify_compressed,
+            );
+
+            let instance: generic::GarbledInstance = res.into();
+
+            let tmp = path.with_extension("tmp");
+            let buf = serde_json::to_vec(&instance)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            fs::write(&tmp, &buf)?;
+            fs::rename(&tmp, &path)?;
+
+            Ok(instance)
+        }
+    }
+
+    impl generic::CiphertextHandlerProvider for PrecomputedCommits {
+        type Handler = PrecomputedCommit;
+        type Error = io::Error;
+
+        fn handler_for(&self, index: usize) -> Result<Self::Handler, Self::Error> {
+            // Use the optimized pool to keep behavior consistent with other test-only garbling
+            let instance =
+                super::super::get_optimized_pool().install(|| self.load_or_garble_one(index))?;
+            Ok(PrecomputedCommit(instance.ciphertext_handler_result))
+        }
     }
 }
