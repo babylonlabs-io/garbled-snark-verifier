@@ -2,6 +2,7 @@
 //! can mirror the protocol described in `docs/gsv_spec.md` with minimal glue.
 #[cfg(feature = "sp1-soldering")]
 use garbled_groth16::{EvaluatedCompressedG1Wires, EvaluatedCompressedG2Wires, EvaluatedFrWires};
+pub use garbled_groth16::{GarblerCompressedInput, GarblerInput};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +19,7 @@ use crate::{
     garbled_groth16::{self, PublicParams},
 };
 
-pub type Config = generic::Config<garbled_groth16::GarblerCompressedInput>;
+pub type Config = generic::Config<GarblerCompressedInput>;
 
 pub const DEFAULT_CAPACITY: usize = 150_000;
 
@@ -38,6 +39,21 @@ impl Garbler {
             garbled_groth16::verify_compressed,
         );
         Self { inner }
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub fn create_test_only(
+        dir: impl AsRef<std::path::Path>,
+        config: Config,
+    ) -> std::io::Result<Self> {
+        Ok(Self {
+            inner: generic::Garbler::create_test_only(
+                dir,
+                config,
+                DEFAULT_CAPACITY,
+                garbled_groth16::verify_compressed,
+            )?,
+        })
     }
 
     pub fn commit_phase_one<HHasher>(&self) -> Vec<CommitPhaseOne<HHasher>>
@@ -112,6 +128,17 @@ impl Garbler {
     pub fn do_soldering(&self) -> crate::sp1_soldering::SolderingProof {
         self.inner.do_soldering()
     }
+
+    /// Test-only soldering that reuses cached proofs when available. The cache key is
+    /// the sorted list of finalized indexes together with the fixed nonce (0 when used
+    /// with `Evaluator::create_test`).
+    #[cfg(all(feature = "sp1-soldering", feature = "test-utils"))]
+    pub fn do_soldering_test_only(
+        &self,
+        cache_dir: Option<&std::path::Path>,
+    ) -> std::io::Result<crate::sp1_soldering::SolderingProof> {
+        self.inner.do_soldering_test_only(cache_dir)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,6 +152,17 @@ impl<H: LabelCommitHasher> Evaluator<H> {
     pub fn create(rng: impl Rng, config: Config, commits: Vec<CommitPhaseOne<H>>) -> Self {
         let inner = generic::Evaluator::<garbled_groth16::GarblerCompressedInput, H>::create(
             rng, config, commits,
+        );
+        Self { inner }
+    }
+
+    /// Test-only constructor mirroring `create` but forcing a fixed nonce (0)
+    /// to enable deterministic Commit₂ during regarbling without persisting
+    /// the nonce to disk.
+    #[cfg(feature = "test-utils")]
+    pub fn create_test_only(config: Config, commits: Vec<CommitPhaseOne<H>>) -> Self {
+        let inner = generic::Evaluator::<garbled_groth16::GarblerCompressedInput, H>::create_test(
+            config, commits,
         );
         Self { inner }
     }
@@ -189,6 +227,33 @@ impl<H: LabelCommitHasher> Evaluator<H> {
             input_cases,
             DEFAULT_CAPACITY,
             garbled_groth16::verify_compressed,
+        )
+    }
+
+    /// Test-only variant of `run_regarbling` that reuses cached garbled
+    /// instances when available and persists any misses to `cache_dir`.
+    #[cfg(feature = "test-utils")]
+    #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
+    pub fn run_regarbling_test_only<CSourceProvider, CHandlerProvider>(
+        &mut self,
+        seeds: Vec<(usize, Seed)>,
+        ciphertext_sources_provider: &CSourceProvider,
+        ciphertext_sink_provider: &CHandlerProvider,
+        cache_dir: Option<&std::path::Path>,
+    ) -> Result<(), ()>
+    where
+        CSourceProvider: CiphertextSourceProvider + Send + Sync,
+        CHandlerProvider: CiphertextHandlerProvider + Send + Sync,
+        CHandlerProvider::Handler: 'static,
+        <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
+    {
+        self.inner.run_regarbling_cached(
+            seeds,
+            ciphertext_sources_provider,
+            ciphertext_sink_provider,
+            DEFAULT_CAPACITY,
+            garbled_groth16::verify_compressed,
+            cache_dir,
         )
     }
 }
