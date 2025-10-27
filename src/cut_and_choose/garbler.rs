@@ -419,6 +419,36 @@ where
             .collect()
     }
 
+    /// Test-only helper that transitions the garbler into `PreparedForEval`
+    /// without spawning ciphertext worker threads. Returns the seeds for the
+    /// circuits that would be opened during verification.
+    #[cfg(feature = "test-utils")]
+    pub fn open_commit_test_only(&mut self) -> Vec<(usize, Seed)> {
+        assert!(
+            self.config.to_finalize() <= self.config.total(),
+            "to_finalize must be <= total"
+        );
+
+        let indexes_to_finalize: Vec<usize> = (0..self.config.to_finalize()).collect();
+
+        let seeds = self
+            .stage
+            .next_stage(indexes_to_finalize.clone().into_boxed_slice());
+
+        seeds
+            .into_vec()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, seed)| {
+                if indexes_to_finalize.binary_search(&index).is_ok() {
+                    None
+                } else {
+                    Some((index, seed))
+                }
+            })
+            .collect()
+    }
+
     #[cfg(feature = "sp1-soldering")]
     pub fn do_soldering(&self) -> SolderingProof {
         let nonce = self

@@ -81,6 +81,8 @@ fn run_flow(cache_dir: &Path, config: &Config) {
         .run_regarbling_test_only_default(cache_dir)
         .expect("warmup regarbling should garble and cache");
 
+    garbler.open_commit_test_only();
+
     garbler.do_soldering_test_only(Some(cache_dir)).unwrap();
 }
 

@@ -78,6 +78,11 @@ impl Garbler {
             .open_commit(indexes_to_finalize, garbled_groth16::verify_compressed)
     }
 
+    #[cfg(feature = "test-utils")]
+    pub fn open_commit_test_only(&mut self) -> Vec<(usize, Seed)> {
+        self.inner.open_commit_test_only()
+    }
+
     /// Return the constant labels for true/false as u128 words for a given instance.
     pub fn true_wire_constant_for(&self, index: usize) -> u128 {
         self.inner.true_wire_constant_for(index)
