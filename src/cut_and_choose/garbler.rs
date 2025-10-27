@@ -3,7 +3,7 @@
 //! produces the `Commit₁` payload, `commit_phase_two` covers `Commit₂`, and
 //! `open_commit` implements the challenge/opening flow.
 #[cfg(test)]
-use std::{fs, path::Path};
+use std::path::Path;
 use std::{
     mem,
     thread::{self, JoinHandle},
@@ -28,7 +28,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GarbledInstance {
     /// Constant to represent false wire constant
     ///
@@ -325,82 +325,7 @@ where
             + Sync
             + Copy,
     {
-        assert_eq!(seeds.len(), config.total);
-
-        let dir = dir.as_ref().to_path_buf();
-        fs::create_dir_all(&dir)?;
-
-        // First pass: read cached instances sequentially; collect misses for garbling.
-        let mut instances: Vec<Option<GarbledInstance>> = vec![None; seeds.len()];
-        let mut to_garble: Vec<(usize, Seed)> = Vec::new();
-
-        for (index, &seed) in seeds.iter().enumerate() {
-            let file = dir.join(format!("{seed}.json"));
-            match fs::read(&file)
-                .ok()
-                .and_then(|b| serde_json::from_slice(&b).ok())
-            {
-                Some(inst) => {
-                    info!(instance = index, seed, "Loaded cached garbled instance");
-                    instances[index] = Some(inst);
-                }
-                None => to_garble.push((index, seed)),
-            }
-        }
-
-        if !to_garble.is_empty() {
-            // Parallel garbling for misses; persist atomically.
-            let produced = super::get_optimized_pool().install(|| {
-                to_garble
-                    .par_iter()
-                    .map(
-                        |&(index, seed)| -> std::io::Result<(usize, GarbledInstance)> {
-                            let inputs = config.input.clone();
-                            let hasher = AESAccumulatingHash::default();
-                            let _span =
-                                tracing::info_span!("garble", instance = index, seed).entered();
-                            info!("Garbling (cache miss or parse error)");
-
-                            let res: StreamingResult<
-                                GarbleMode<AesNiHasher, AESAccumulatingHash>,
-                                I,
-                                GarbledWire,
-                            > = CircuitBuilder::streaming_garbling(
-                                inputs,
-                                live_capacity,
-                                seed,
-                                hasher,
-                                builder,
-                            );
-
-                            let inst = GarbledInstance::from(res);
-                            let file = dir.join(format!("{seed}.json"));
-                            let tmp = dir.join(format!("{seed}.json.tmp"));
-                            serde_json::to_writer(fs::File::create(&tmp)?, &inst)?;
-                            fs::rename(&tmp, &file)?;
-                            Ok((index, inst))
-                        },
-                    )
-                    .collect::<Result<Vec<_>, _>>()
-            })?;
-
-            for (idx, inst) in produced.into_iter() {
-                instances[idx] = Some(inst);
-            }
-        }
-
-        let instances = instances
-            .into_iter()
-            .map(|opt| opt.expect("instance present after load/garble"))
-            .collect();
-
-        Ok(Self {
-            stage: GarblerStage::Generating { seeds },
-            instances,
-            live_capacity,
-            config,
-            nonce: None,
-        })
+        easy_test::create_with_seeds_or_cache(seeds, dir.as_ref(), config, live_capacity, builder)
     }
 
     /// Produce the `Commit₁` transcript for every garbled instance (spec Step 1.2).
@@ -521,6 +446,11 @@ where
         sp1_soldering::prove_soldering(all_instances, nonce)
     }
 
+    #[cfg(all(test, feature = "sp1-soldering"))]
+    pub fn do_soldering_test(&self, cache_dir: Option<&Path>) -> std::io::Result<SolderingProof> {
+        easy_test::do_soldering_test(self, cache_dir)
+    }
+
     /// Return the constant labels for true/false as u128 words for a given instance.
     pub fn true_wire_constant_for(&self, index: usize) -> u128 {
         self.instances[index]
@@ -552,5 +482,173 @@ where
 
     pub fn output_wire(&self, index: usize) -> Option<&GarbledWire> {
         self.instances.get(index).map(|gw| &gw.output_wire_values)
+    }
+}
+
+#[cfg(test)]
+mod easy_test {
+    use std::{fs, io, path::Path};
+
+    use serde_json;
+    #[cfg(feature = "sp1-soldering")]
+    use sha2::{Digest, Sha256};
+
+    use super::*;
+
+    pub(super) fn create_with_seeds_or_cache<I, F>(
+        seeds: Box<[Seed]>,
+        dir: &Path,
+        config: Config<I>,
+        live_capacity: usize,
+        builder: F,
+    ) -> io::Result<Garbler<I>>
+    where
+        I: CircuitInput
+            + Clone
+            + Send
+            + Sync
+            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+        <I as CircuitInput>::WireRepr: Send,
+        I: 'static,
+        F: Fn(
+                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+                &I::WireRepr,
+            ) -> WireId
+            + Send
+            + Sync
+            + Copy,
+    {
+        fs::create_dir_all(dir)?;
+
+        let mut instances = Vec::with_capacity(seeds.len());
+
+        for (index, &seed) in seeds.iter().enumerate() {
+            let path = dir.join(format!("{seed}.json"));
+            if let Ok(bytes) = fs::read(&path) {
+                if let Ok(instance) = serde_json::from_slice::<GarbledInstance>(&bytes) {
+                    info!(instance = index, seed, "Loaded cached garbled instance");
+                    instances.push(instance);
+                    continue;
+                }
+            }
+
+            let inputs = config.input.clone();
+            let hasher = AESAccumulatingHash::default();
+            let _span = tracing::info_span!("garble", instance = index, seed).entered();
+            info!("Garbling (cache miss or parse error)");
+
+            let res: StreamingResult<GarbleMode<AesNiHasher, AESAccumulatingHash>, I, GarbledWire> =
+                CircuitBuilder::streaming_garbling(inputs, live_capacity, seed, hasher, builder);
+
+            let instance = GarbledInstance::from(res);
+            let tmp = path.with_extension("tmp");
+            let buf = serde_json::to_vec(&instance)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            fs::write(&tmp, &buf)?;
+            fs::rename(&tmp, &path)?;
+            instances.push(instance);
+        }
+
+        Ok(Garbler {
+            stage: GarblerStage::Generating { seeds },
+            instances,
+            live_capacity,
+            config,
+            nonce: None,
+        })
+    }
+
+    #[cfg(feature = "sp1-soldering")]
+    pub(super) fn do_soldering_test<I>(
+        garbler: &Garbler<I>,
+        cache_dir: Option<&Path>,
+    ) -> io::Result<SolderingProof>
+    where
+        I: CircuitInput
+            + Clone
+            + Send
+            + Sync
+            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+        <I as CircuitInput>::WireRepr: Send,
+        I: 'static,
+    {
+        let nonce = garbler
+            .nonce
+            .expect("Nonce must be set before calling do_soldering");
+        let GarblerStage::PreparedForEval { indexes_to_eval } = &garbler.stage else {
+            panic!("Garbler not ready to soldering");
+        };
+
+        let mut finalize = indexes_to_eval.clone();
+        finalize.sort_unstable();
+
+        if let Some(dir) = cache_dir {
+            fs::create_dir_all(dir)?;
+
+            let key = SolderCacheKey::new(nonce, &finalize, &garbler.instances);
+            let path = dir.join(key.file_name());
+
+            if let Ok(bytes) = fs::read(&path) {
+                if let Ok(proof) = serde_json::from_slice::<SolderingProof>(&bytes) {
+                    return Ok(proof);
+                }
+            }
+
+            let mut all_instances = Vec::with_capacity(finalize.len());
+            for &index in finalize.iter() {
+                all_instances.push(garbler.instances[index].input_wire_values.clone());
+            }
+
+            let proof = sp1_soldering::prove_soldering(all_instances, nonce.to_u128());
+            let tmp = path.with_extension("tmp");
+            let buf = serde_json::to_vec(&proof)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+            fs::write(&tmp, &buf)?;
+            fs::rename(&tmp, &path)?;
+            Ok(proof)
+        } else {
+            Ok(garbler.do_soldering())
+        }
+    }
+
+    #[cfg(feature = "sp1-soldering")]
+    struct SolderCacheKey {
+        digest: [u8; 16],
+    }
+
+    #[cfg(feature = "sp1-soldering")]
+    impl SolderCacheKey {
+        fn new(nonce: S, finalize: &[usize], instances: &[GarbledInstance]) -> Self {
+            let mut hasher = Sha256::new();
+            hasher.update(nonce.to_bytes());
+
+            for &idx in finalize {
+                hasher.update(&idx.to_le_bytes());
+                let inst = &instances[idx];
+
+                hasher.update(inst.false_wire_constant.label0.to_bytes());
+                hasher.update(inst.false_wire_constant.label1.to_bytes());
+                hasher.update(inst.true_wire_constant.label0.to_bytes());
+                hasher.update(inst.true_wire_constant.label1.to_bytes());
+                hasher.update(inst.output_wire_values.label0.to_bytes());
+                hasher.update(inst.output_wire_values.label1.to_bytes());
+
+                for wire in &inst.input_wire_values {
+                    hasher.update(wire.label0.to_bytes());
+                    hasher.update(wire.label1.to_bytes());
+                }
+
+                hasher.update(&inst.ciphertext_handler_result);
+            }
+
+            let digest = hasher.finalize();
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&digest[..16]);
+            Self { digest: out }
+        }
+
+        fn file_name(&self) -> String {
+            format!("solder_{}.json", hex::encode(self.digest))
+        }
     }
 }

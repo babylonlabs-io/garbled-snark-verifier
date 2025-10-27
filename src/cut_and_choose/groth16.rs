@@ -112,6 +112,17 @@ impl Garbler {
     pub fn do_soldering(&self) -> crate::sp1_soldering::SolderingProof {
         self.inner.do_soldering()
     }
+
+    /// Test-only soldering that reuses cached proofs when available. The cache key is
+    /// the sorted list of finalized indexes together with the fixed nonce (0 when used
+    /// with `Evaluator::create_test`).
+    #[cfg(all(test, feature = "sp1-soldering"))]
+    pub fn do_soldering_test(
+        &self,
+        cache_dir: Option<&std::path::Path>,
+    ) -> std::io::Result<crate::sp1_soldering::SolderingProof> {
+        self.inner.do_soldering_test(cache_dir)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -124,6 +135,17 @@ impl<H: LabelCommitHasher> Evaluator<H> {
     // Generate `to_finalize` with `rng` based on data on `Config`
     pub fn create(rng: impl Rng, config: Config, commits: Vec<CommitPhaseOne<H>>) -> Self {
         let inner = generic::Evaluator::<garbled_groth16::GarblerCompressedInput, H>::create(
+            rng, config, commits,
+        );
+        Self { inner }
+    }
+
+    /// Test-only constructor mirroring `create` but forcing a fixed nonce (0)
+    /// to enable deterministic Commit₂ during regarbling without persisting
+    /// the nonce to disk.
+    #[cfg(test)]
+    pub fn create_test(rng: impl Rng, config: Config, commits: Vec<CommitPhaseOne<H>>) -> Self {
+        let inner = generic::Evaluator::<garbled_groth16::GarblerCompressedInput, H>::create_test(
             rng, config, commits,
         );
         Self { inner }
@@ -189,6 +211,33 @@ impl<H: LabelCommitHasher> Evaluator<H> {
             input_cases,
             DEFAULT_CAPACITY,
             garbled_groth16::verify_compressed,
+        )
+    }
+
+    /// Test-only variant of `run_regarbling` that reuses cached garbled
+    /// instances when available and persists any misses to `cache_dir`.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
+    pub fn run_regarbling_test<CSourceProvider, CHandlerProvider>(
+        &mut self,
+        seeds: Vec<(usize, Seed)>,
+        ciphertext_sources_provider: &CSourceProvider,
+        ciphertext_sink_provider: &CHandlerProvider,
+        cache_dir: Option<&std::path::Path>,
+    ) -> Result<(), ()>
+    where
+        CSourceProvider: CiphertextSourceProvider + Send + Sync,
+        CHandlerProvider: CiphertextHandlerProvider + Send + Sync,
+        CHandlerProvider::Handler: 'static,
+        <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
+    {
+        self.inner.run_regarbling_test(
+            seeds,
+            ciphertext_sources_provider,
+            ciphertext_sink_provider,
+            DEFAULT_CAPACITY,
+            garbled_groth16::verify_compressed,
+            cache_dir,
         )
     }
 }
