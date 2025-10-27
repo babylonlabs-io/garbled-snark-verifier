@@ -556,11 +556,12 @@ pub mod test_utils {
                     );
 
                     let instance = GarbledInstance::from(res);
-                    let tmp = path.with_extension("tmp");
+
                     let buf = serde_json::to_vec(&instance)
                         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-                    fs::write(&tmp, &buf)?;
-                    fs::rename(&tmp, &path)?;
+
+                    fs::write(&path, &buf)?;
+
                     Ok(instance)
                 })
                 .collect::<Result<Vec<_>, io::Error>>()
