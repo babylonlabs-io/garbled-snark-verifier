@@ -651,11 +651,12 @@ pub mod test_utils {
             }
 
             let proof = sp1_soldering::prove_soldering(all_instances, nonce.to_u128());
-            let tmp = path.with_extension("tmp");
+
             let buf = serde_json::to_vec(&proof)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
-            fs::write(&tmp, &buf)?;
-            fs::rename(&tmp, &path)?;
+
+            fs::write(&path, &buf)?;
+
             Ok(proof)
         } else {
             Ok(garbler.do_soldering())
