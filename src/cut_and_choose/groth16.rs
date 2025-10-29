@@ -14,7 +14,7 @@ use crate::{
     circuit::{CiphertextHandler, CiphertextSource},
     cut_and_choose::{
         self as generic, CiphertextCommit, CiphertextHandlerProvider, CiphertextSourceProvider,
-        ConsistencyError, DefaultLabelCommitHasher, GarblerStage,
+        ConsistencyError, DefaultLabelCommitHasher, GarblerStage, garbler::OpenCommit,
     },
     garbled_groth16::{self, PublicParams},
 };
@@ -76,6 +76,14 @@ impl Garbler {
     ) -> Vec<OpenForInstance> {
         self.inner
             .open_commit(indexes_to_finalize, garbled_groth16::verify_compressed)
+    }
+
+    pub fn open_commit_without_ciphertexts(
+        &mut self,
+        indexes_to_finalize: Vec<usize>,
+    ) -> OpenCommit {
+        self.inner
+            .open_commit_without_ciphertexts(indexes_to_finalize)
     }
 
     #[cfg(feature = "test-utils")]

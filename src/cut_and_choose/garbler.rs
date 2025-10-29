@@ -234,6 +234,11 @@ pub struct Garbler<I: CircuitInput + Clone> {
     nonce: Option<S>,
 }
 
+pub struct OpenCommit {
+    open: Vec<(usize, Seed)>,
+    closed: Vec<(usize, Seed)>,
+}
+
 impl<I> Garbler<I>
 where
     I: CircuitInput
@@ -370,6 +375,11 @@ where
             + Copy,
         I: EncodeInput<GarbleMode<AesNiHasher, CTH>>,
     {
+        indexes_to_finalize.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        indexes_to_finalize.dedup_by_key(|v| v.0);
+
+        assert_eq!(indexes_to_finalize.len(), self.config().to_finalize());
+
         let seeds = self
             .stage
             .next_stage(indexes_to_finalize.iter().map(|(i, _)| *i).collect());
@@ -417,6 +427,41 @@ where
                 }
             })
             .collect()
+    }
+
+    /// Transition to `PreparedForEval` without spawning ciphertext workers.
+    /// Returns seeds for all instances
+    pub fn open_commit_without_ciphertexts(
+        &mut self,
+        mut indexes_to_finalize: Vec<usize>,
+    ) -> OpenCommit {
+        indexes_to_finalize.sort();
+        indexes_to_finalize.dedup();
+
+        assert_eq!(indexes_to_finalize.len(), self.config().to_finalize());
+
+        let seeds = self
+            .stage
+            .next_stage(indexes_to_finalize.clone().into_boxed_slice());
+
+        let mut commit = OpenCommit {
+            open: vec![],
+            closed: vec![],
+        };
+
+        seeds
+            .into_vec()
+            .into_iter()
+            .enumerate()
+            .for_each(|(index, seed)| {
+                if indexes_to_finalize.binary_search(&index).is_ok() {
+                    commit.closed.push((index, seed));
+                } else {
+                    commit.open.push((index, seed));
+                }
+            });
+
+        commit
     }
 
     /// Test-only helper that transitions the garbler into `PreparedForEval`
