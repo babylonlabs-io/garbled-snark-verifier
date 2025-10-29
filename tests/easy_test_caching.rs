@@ -78,8 +78,8 @@ fn run_flow(cache_dir: &Path, config: &Config) {
     evaluator.fill_second_commit(second_commits);
 
     evaluator
-        .run_regarbling_test_only_default(cache_dir)
-        .expect("warmup regarbling should garble and cache");
+        .full_check_commit_test_only_default(cache_dir)
+        .expect("warmup full check should garble and cache");
 
     garbler.open_commit_test_only();
 

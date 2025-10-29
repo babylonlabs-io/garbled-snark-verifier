@@ -196,8 +196,24 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         self.inner.finalized_indexes()
     }
 
+    pub fn get_commit_phase_one(&self, index: usize) -> Option<&CommitPhaseOne<H>> {
+        self.inner.get_commit_phase_one(index)
+    }
+
+    pub fn get_commit_phase_two(&self, index: usize) -> Option<&CommitPhaseTwo<H>> {
+        self.inner.get_commit_phase_two(index)
+    }
+
+    /// Simplified regarbling method that only verifies open instances without ciphertext verification.
     #[allow(clippy::result_unit_err)]
-    pub fn run_regarbling<CSourceProvider, CHandlerProvider>(
+    pub fn run_regarbling(&mut self, seeds: Vec<(usize, Seed)>) -> Result<(), ()> {
+        self.inner
+            .run_regarbling(seeds, DEFAULT_CAPACITY, garbled_groth16::verify_compressed)
+    }
+
+    /// Full verification method that checks both ciphertext commitments and performs regarbling.
+    #[allow(clippy::result_unit_err)]
+    pub fn full_check_commit<CSourceProvider, CHandlerProvider>(
         &mut self,
         seeds: Vec<(usize, Seed)>,
         ciphertext_sources_provider: &CSourceProvider,
@@ -209,7 +225,7 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         CHandlerProvider::Handler: 'static,
         <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
     {
-        self.inner.run_regarbling(
+        self.inner.full_check_commit(
             seeds,
             ciphertext_sources_provider,
             ciphertext_sink_provider,
@@ -247,11 +263,11 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         )
     }
 
-    /// Test-only variant of `run_regarbling` that reuses cached garbled
+    /// Test-only variant of `full_check_commit` that reuses cached garbled
     /// instances when available and persists any misses to `cache_dir`.
     #[cfg(feature = "test-utils")]
     #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn run_regarbling_test_only<CSourceProvider, CHandlerProvider>(
+    pub fn full_check_commit_test_only<CSourceProvider, CHandlerProvider>(
         &mut self,
         ciphertext_sources_provider: &CSourceProvider,
         ciphertext_sink_provider: &CHandlerProvider,
@@ -263,7 +279,7 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         CHandlerProvider::Handler: 'static,
         <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
     {
-        self.inner.run_regarbling_cached(
+        self.inner.full_check_commit_cached(
             ciphertext_sources_provider,
             ciphertext_sink_provider,
             DEFAULT_CAPACITY,
@@ -272,21 +288,21 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         )
     }
 
-    /// Test-only convenience: regarble with on-demand cache warmup; no stream required.
+    /// Test-only convenience: full check with on-demand cache warmup; no stream required.
     ///
     /// Uses `test_utils::PrecomputedCommits` to provide expected ciphertext commits,
     /// warming the cache at `cache_dir` as needed. For the ciphertext source, a noop
     /// provider is used so finalized indexes do not require an actual stream.
     #[cfg(feature = "test-utils")]
     #[allow(clippy::result_unit_err)]
-    pub fn run_regarbling_test_only_default(
+    pub fn full_check_commit_test_only_default(
         &mut self,
         cache_dir: impl AsRef<std::path::Path>,
     ) -> Result<(), ()> {
         let commits =
             test_utils::PrecomputedCommits::new(cache_dir.as_ref(), self.inner.config().clone());
         let noop = test_utils::NoopCiphertext;
-        self.inner.run_regarbling_cached(
+        self.inner.full_check_commit_cached(
             &noop,
             &commits,
             DEFAULT_CAPACITY,
@@ -295,11 +311,11 @@ impl<H: LabelCommitHasher> Evaluator<H> {
         )
     }
 
-    /// Test-only convenience: regarble with optional external ciphertext stream and
+    /// Test-only convenience: full check with optional external ciphertext stream and
     /// on-demand cache warmup for commits.
     #[cfg(feature = "test-utils")]
     #[allow(clippy::result_unit_err)]
-    pub fn run_regarbling_test_only_with_stream<CSourceProvider>(
+    pub fn full_check_commit_test_only_with_stream<CSourceProvider>(
         &mut self,
         ciphertext_sources_provider: &CSourceProvider,
         cache_dir: impl AsRef<std::path::Path>,
@@ -309,7 +325,7 @@ impl<H: LabelCommitHasher> Evaluator<H> {
     {
         let commits =
             test_utils::PrecomputedCommits::new(cache_dir.as_ref(), self.inner.config().clone());
-        self.inner.run_regarbling_cached(
+        self.inner.full_check_commit_cached(
             ciphertext_sources_provider,
             &commits,
             DEFAULT_CAPACITY,

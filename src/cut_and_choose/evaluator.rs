@@ -99,6 +99,27 @@ where
         &self.config
     }
 
+    /// Get a specific commit from phase one by index.
+    pub fn get_commit_phase_one(&self, index: usize) -> Option<&CommitPhaseOne<H>> {
+        match &self.stage {
+            Stage::Empty => None,
+            Stage::Created(first) => first.get(index),
+            Stage::Filled { first, .. } => first.get(index),
+            #[cfg(feature = "sp1-soldering")]
+            Stage::Soldered { first, .. } => first.get(index),
+        }
+    }
+
+    /// Get a specific commit from phase two by index.
+    pub fn get_commit_phase_two(&self, index: usize) -> Option<&CommitPhaseTwo<H>> {
+        match &self.stage {
+            Stage::Empty | Stage::Created(_) => None,
+            Stage::Filled { second, .. } => second.get(index),
+            #[cfg(feature = "sp1-soldering")]
+            Stage::Soldered { second, .. } => second.get(index),
+        }
+    }
+
     // Generate `to_finalize` with `rng` based on data on `Config`
     pub fn create(mut rng: impl Rng, config: Config<I>, commits: Vec<CommitPhaseOne<H>>) -> Self {
         assert!(
@@ -169,7 +190,7 @@ where
     // 1. Check that `OpenForInstance` matches the ones stored in `self.to_finalize`.
     // 2. For `Open` run `streaming_garbling` via rayon, where at the end it checks for a match with saved commits
     #[allow(clippy::result_unit_err)]
-    pub fn run_regarbling<CSourceProvider, CHandlerProvider, F>(
+    pub fn full_check_commit<CSourceProvider, CHandlerProvider, F>(
         &mut self,
         seeds: Vec<(usize, Seed)>,
         ciphertext_sources_provider: &CSourceProvider,
@@ -295,11 +316,93 @@ where
         Ok(())
     }
 
+    /// Simplified regarbling method that only verifies open instances without ciphertext verification.
+    /// This only processes instances that have seeds (open instances) and verifies that regarbled commits
+    /// match the stored commits.
+    #[allow(clippy::result_unit_err)]
+    pub fn run_regarbling<F>(
+        &mut self,
+        seeds: Vec<(usize, Seed)>,
+        live_capacity: usize,
+        builder: F,
+    ) -> Result<(), ()>
+    where
+        F: Fn(
+                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+                &I::WireRepr,
+            ) -> WireId
+            + Send
+            + Sync
+            + Copy,
+    {
+        let Stage::Filled {
+            first,
+            second,
+            regarbled,
+        } = &mut self.stage
+        else {
+            panic!("Can't run regarbling for not filled Evaluator");
+        };
+
+        let inputs = self.config.input.clone();
+        let nonce = self.nonce;
+
+        super::get_optimized_pool().install(|| {
+            seeds
+                .par_iter()
+                .map(|(index, garbling_seed)| {
+                    let inputs = inputs.clone();
+                    let hasher = AESAccumulatingHash::default();
+
+                    let span = tracing::info_span!("regarble", instance = index);
+                    let _enter = span.enter();
+
+                    info!("Starting regarbling of circuit (cut-and-choose)");
+
+                    let res: StreamingResult<
+                        GarbleMode<AesNiHasher, AESAccumulatingHash>,
+                        I,
+                        GarbledWire,
+                    > = CircuitBuilder::streaming_garbling(
+                        inputs.clone(),
+                        live_capacity,
+                        *garbling_seed,
+                        hasher,
+                        builder,
+                    );
+
+                    let res = res.into();
+                    let regarbling_first_commit = CommitPhaseOne::<H>::from_instance(&res);
+
+                    if regarbling_first_commit != first[*index] {
+                        error!("regarbling failed, first commit not equal");
+                        return Err(());
+                    }
+
+                    let regarbling_second_commit = CommitPhaseTwo::<H>::from_instance(&res, nonce);
+
+                    if regarbling_second_commit.input_commitments()
+                        != second[*index].input_commitments()
+                    {
+                        error!("regarbling failed, second commit not equal");
+                        return Err(());
+                    }
+
+                    Ok(())
+                })
+                .collect::<Result<Vec<()>, ()>>()
+        })?;
+
+        *regarbled = true;
+
+        Ok(())
+    }
+
     /// Test-only convenience: reuse cached garbled instances, falling back to
     /// full regarbling when a cache miss occurs.
     #[cfg(feature = "test-utils")]
     #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn run_regarbling_cached<CSourceProvider, CHandlerProvider, F>(
+    pub fn full_check_commit_cached<CSourceProvider, CHandlerProvider, F>(
         &mut self,
         ciphertext_sources_provider: &CSourceProvider,
         ciphertext_handler_provider: &CHandlerProvider,
@@ -320,7 +423,7 @@ where
             + Sync
             + Copy,
     {
-        test_utils::run_regarbling_test_only(
+        test_utils::full_check_commit_test_only(
             self,
             ciphertext_sources_provider,
             ciphertext_handler_provider,
@@ -344,7 +447,7 @@ pub mod test_utils {
     };
 
     #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn run_regarbling_test_only<I, H, CSourceProvider, CHandlerProvider, F>(
+    pub fn full_check_commit_test_only<I, H, CSourceProvider, CHandlerProvider, F>(
         evaluator: &mut Evaluator<I, H>,
         ciphertext_sources_provider: &CSourceProvider,
         ciphertext_handler_provider: &CHandlerProvider,

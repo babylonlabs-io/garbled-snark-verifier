@@ -363,12 +363,12 @@ fn run_evaluator(
 
     info!("Output dir: {}", out_dir.display());
 
-    eval.run_regarbling(
+    eval.full_check_commit(
         open_result,
         &receivers,
         &FileCiphertextHandlerProvider::new(out_dir.clone(), None).unwrap(),
     )
-    .expect("regarbling checks");
+    .expect("full check commit");
 
     // Verify soldering proof binds inputs to commits
     let SetupBroadcast::SolderingProof(proof) = g2e_rx.recv().expect("recv soldering proof") else {
