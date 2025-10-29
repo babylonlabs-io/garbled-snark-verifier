@@ -144,6 +144,10 @@ impl Garbler {
     ) -> std::io::Result<crate::sp1_soldering::SolderingProof> {
         self.inner.do_soldering_test_only(cache_dir)
     }
+
+    pub fn finalized_indexes(&self) -> Option<&[usize]> {
+        self.inner.finalized_indexes()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

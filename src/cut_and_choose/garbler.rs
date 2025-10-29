@@ -514,6 +514,13 @@ where
     pub fn output_wire(&self, index: usize) -> Option<&GarbledWire> {
         self.instances.get(index).map(|gw| &gw.output_wire_values)
     }
+
+    pub fn finalized_indexes(&self) -> Option<&[usize]> {
+        match &self.stage {
+            GarblerStage::Generating { .. } => None,
+            GarblerStage::PreparedForEval { indexes_to_eval } => Some(indexes_to_eval),
+        }
+    }
 }
 
 #[cfg(feature = "test-utils")]
