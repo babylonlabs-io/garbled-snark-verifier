@@ -147,11 +147,7 @@ pub fn verify_soldering(
         commitments,
     };
 
-    info!("Data to verify program is {pp:?}");
-
     let input_bytes = serialize_public_params(&pp).expect("failed to serialize public params");
-
-    info!("Raw data to verify is {input_bytes:?}");
 
     let prover = SP1Prover::<CpuProverComponents>::new();
     let (_pk, _pk_device, _program, vk) = prover.setup(elf());
