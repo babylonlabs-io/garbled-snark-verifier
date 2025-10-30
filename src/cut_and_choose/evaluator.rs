@@ -1293,6 +1293,17 @@ where
 
         Ok(verified_public_params)
     }
+
+    pub fn verified_soldered_base_commitment(&self) -> Option<&[LabelCommit<Sha256Commit>]> {
+        let Stage::Soldered { first, .. } = &self.stage else {
+            return None;
+        };
+
+        let base_index = self.to_finalize.iter().copied().min()?;
+        first
+            .get(base_index)
+            .map(|commit| commit.input_commitments())
+    }
 }
 
 #[cfg(feature = "sp1-soldering")]

@@ -424,6 +424,12 @@ impl Evaluator<generic::Sha256LabelCommitHasher> {
         self.inner.verify_soldering_against_commits(proof)
     }
 
+    pub fn verified_soldered_base_commitment(
+        &self,
+    ) -> Option<&[generic::LabelCommit<crate::sp1_soldering::Sha256Commit>]> {
+        self.inner.verified_soldered_base_commitment()
+    }
+
     /// Evaluate all finalized instances using a single base set of input labels,
     /// reconstructing the rest from previously verified soldering deltas.
     ///
