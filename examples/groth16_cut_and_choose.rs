@@ -295,6 +295,44 @@ fn run_garbler(
     assert!(!fin_inputs.is_empty(), "no finalized inputs prepared");
     let base_case = fin_inputs.into_iter().next().expect("base case");
 
+    // Demo: Print commitment info from Garbler side before evaluation
+    info!("=== Garbler Side Commitment Demo ===");
+
+    // Get base commitment for soldered instance
+    if let Some(base_commits) = g.soldered_base_commitment::<ExampleHasher>() {
+        info!(
+            "Garbler base instance input commitments (count: {})",
+            base_commits.len()
+        );
+        for (i, commit) in base_commits.iter().take(3).enumerate() {
+            info!(
+                "  Wire {}: label0={}, label1={}",
+                i,
+                hex::encode(commit.commit_label0),
+                hex::encode(commit.commit_label1)
+            );
+        }
+        if base_commits.len() > 3 {
+            info!("  ... and {} more wires", base_commits.len() - 3);
+        }
+    }
+
+    // Get output commitments for all finalized instances
+    if let Some(output_commits) = g.finalized_output_label_commitment::<ExampleHasher>() {
+        info!(
+            "Garbler finalized instances output commitments (count: {})",
+            output_commits.len()
+        );
+        for (i, (true_commit, false_commit)) in output_commits.iter().enumerate() {
+            info!(
+                "  Instance {}: true={}, false={}",
+                i,
+                hex::encode(true_commit),
+                hex::encode(false_commit)
+            );
+        }
+    }
+
     g2e_tx
         .send(SetupBroadcast::BaseInput(Box::new(base_case)))
         .expect("send base evaluator input labels")
@@ -383,6 +421,46 @@ fn run_evaluator(
     let SetupBroadcast::BaseInput(base_case) = g2e_rx.recv().expect("recv base input") else {
         panic!("unexpected message; expected base evaluator input")
     };
+
+    // Demo: Print commitment info from Evaluator side before evaluation
+    info!("=== Evaluator Side Commitment Demo ===");
+
+    // Get verified base commitment after soldering
+    if let Some(base_commits) = eval.verified_soldered_base_commitment() {
+        info!(
+            "Evaluator verified base instance input commitments (count: {})",
+            base_commits.len()
+        );
+        for (i, commit) in base_commits.iter().take(3).enumerate() {
+            info!(
+                "  Wire {}: label0={}, label1={}",
+                i,
+                hex::encode(commit.commit_label0),
+                hex::encode(commit.commit_label1)
+            );
+        }
+        if base_commits.len() > 3 {
+            info!("  ... and {} more wires", base_commits.len() - 3);
+        }
+    }
+
+    // Get output commitments for all finalized instances
+    if let Some(output_commits) = eval.finalized_output_label_commitment() {
+        info!(
+            "Evaluator finalized instances output commitments (count: {})",
+            output_commits.len()
+        );
+        for (i, (true_commit, false_commit)) in output_commits.iter().enumerate() {
+            info!(
+                "  Instance {}: true={}, false={}",
+                i,
+                hex::encode(true_commit),
+                hex::encode(false_commit)
+            );
+        }
+    }
+
+    info!("=== Starting Evaluation ===");
 
     eval.run_evaluate_with_soldered_instances(&out_dir, *base_case)
         .expect("soldered evaluate")

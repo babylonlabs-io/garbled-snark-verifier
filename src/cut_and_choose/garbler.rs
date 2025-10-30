@@ -612,6 +612,45 @@ where
             (phase_one, phase_two)
         })
     }
+
+    /// Get the base commitment for the finalized instance with minimum index.
+    /// Returns None if there are no finalized instances.
+    pub fn soldered_base_commitment<HHasher: LabelCommitHasher>(
+        &self,
+    ) -> Option<Vec<LabelCommit<HHasher::Output>>> {
+        let indexes = self.finalized_indexes()?;
+        let base_index = indexes.iter().copied().min()?;
+
+        self.instances
+            .get(base_index)
+            .map(|instance| commit_input_wires::<HHasher>(&instance.input_wire_values, None))
+    }
+
+    /// Get output label commitments (both true and false) for all finalized instances.
+    /// Returns None if there are no finalized instances.
+    pub fn finalized_output_label_commitment<HHasher: LabelCommitHasher>(
+        &self,
+    ) -> Option<Vec<(HHasher::Output, HHasher::Output)>> {
+        let indexes = self.finalized_indexes()?;
+
+        let commitments: Vec<_> = indexes
+            .iter()
+            .filter_map(|&index| {
+                self.instances.get(index).map(|instance| {
+                    (
+                        commit_output_label1::<HHasher>(&instance.output_wire_values),
+                        commit_output_label0::<HHasher>(&instance.output_wire_values),
+                    )
+                })
+            })
+            .collect();
+
+        if commitments.is_empty() {
+            None
+        } else {
+            Some(commitments)
+        }
+    }
 }
 
 #[cfg(feature = "test-utils")]

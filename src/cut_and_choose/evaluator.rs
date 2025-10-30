@@ -1304,6 +1304,33 @@ where
             .get(base_index)
             .map(|commit| commit.input_commitments())
     }
+
+    /// Get output label commitments (both true and false) for all finalized instances.
+    /// Returns None if there are no finalized instances.
+    pub fn finalized_output_label_commitment(&self) -> Option<Vec<(Sha256Commit, Sha256Commit)>> {
+        let first = match &self.stage {
+            Stage::Empty | Stage::Created(_) => return None,
+            Stage::Filled { first, .. } => first,
+            #[cfg(feature = "sp1-soldering")]
+            Stage::Soldered { first, .. } => first,
+        };
+
+        let commitments: Vec<_> = self
+            .to_finalize
+            .iter()
+            .filter_map(|&index| {
+                first
+                    .get(index)
+                    .map(|commit| (commit.output_commit_true(), commit.output_commit_false()))
+            })
+            .collect();
+
+        if commitments.is_empty() {
+            None
+        } else {
+            Some(commitments)
+        }
+    }
 }
 
 #[cfg(feature = "sp1-soldering")]

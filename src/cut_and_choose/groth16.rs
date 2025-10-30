@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub use super::Commitment;
 pub use crate::cut_and_choose::{
-    CommitPhaseOne, CommitPhaseTwo, LabelCommitHasher, OpenForInstance, Seed,
+    CommitPhaseOne, CommitPhaseTwo, LabelCommit, LabelCommitHasher, OpenForInstance, Seed,
 };
 use crate::{
     EvaluatedWire, GarbledWire, S,
@@ -166,6 +166,22 @@ impl Garbler {
     /// into a single Option that returns both when ready.
     pub fn get_commitment<HHasher: LabelCommitHasher>(&self) -> Option<Commitment<HHasher>> {
         self.inner.get_commitment::<HHasher>()
+    }
+
+    /// Get the base commitment for the finalized instance with minimum index.
+    /// Returns None if there are no finalized instances.
+    pub fn soldered_base_commitment<HHasher: LabelCommitHasher>(
+        &self,
+    ) -> Option<Vec<crate::cut_and_choose::LabelCommit<HHasher::Output>>> {
+        self.inner.soldered_base_commitment::<HHasher>()
+    }
+
+    /// Get output label commitments (both true and false) for all finalized instances.
+    /// Returns None if there are no finalized instances.
+    pub fn finalized_output_label_commitment<HHasher: LabelCommitHasher>(
+        &self,
+    ) -> Option<Vec<(HHasher::Output, HHasher::Output)>> {
+        self.inner.finalized_output_label_commitment::<HHasher>()
     }
 }
 
@@ -428,6 +444,19 @@ impl Evaluator<generic::Sha256LabelCommitHasher> {
         &self,
     ) -> Option<&[generic::LabelCommit<crate::sp1_soldering::Sha256Commit>]> {
         self.inner.verified_soldered_base_commitment()
+    }
+
+    /// Get output label commitments (both true and false) for all finalized instances.
+    /// Returns None if there are no finalized instances.
+    pub fn finalized_output_label_commitment(
+        &self,
+    ) -> Option<
+        Vec<(
+            crate::sp1_soldering::Sha256Commit,
+            crate::sp1_soldering::Sha256Commit,
+        )>,
+    > {
+        self.inner.finalized_output_label_commitment()
     }
 
     /// Evaluate all finalized instances using a single base set of input labels,
