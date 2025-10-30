@@ -21,8 +21,8 @@ use crate::{
         StreamingResult,
     },
     cut_and_choose::{
-        CiphertextCommit, Config, DefaultLabelCommitHasher, LabelCommit, LabelCommitHasher, Seed,
-        commit_label_with,
+        CiphertextCommit, Commitment, Config, DefaultLabelCommitHasher, LabelCommit,
+        LabelCommitHasher, Seed, commit_label_with,
     },
 };
 
@@ -66,7 +66,7 @@ impl<I: CircuitInput>
 
 /// `Commit₁(i)` payload containing ciphertext hash, per-wire input commits,
 /// output commits, and constant wire values (spec Step 1.2).
-#[derive(Clone, Debug, Serialize, Deserialize, Eq)]
+#[derive(Debug, Serialize, Deserialize, Eq)]
 #[serde(bound = "H: LabelCommitHasher")]
 pub struct CommitPhaseOne<H: LabelCommitHasher = DefaultLabelCommitHasher> {
     ciphertext_hash: CiphertextCommit,
@@ -77,6 +77,19 @@ pub struct CommitPhaseOne<H: LabelCommitHasher = DefaultLabelCommitHasher> {
     output_label0_commit: H::Output,
     true_constant: u128,
     false_constant: u128,
+}
+
+impl<H: LabelCommitHasher> Clone for CommitPhaseOne<H> {
+    fn clone(&self) -> Self {
+        Self {
+            ciphertext_hash: self.ciphertext_hash,
+            input_commitments: self.input_commitments.clone(),
+            output_label1_commit: self.output_label1_commit,
+            output_label0_commit: self.output_label0_commit,
+            true_constant: self.true_constant,
+            false_constant: self.false_constant,
+        }
+    }
 }
 
 impl<H: LabelCommitHasher> PartialEq for CommitPhaseOne<H> {
@@ -148,10 +161,18 @@ impl<H: LabelCommitHasher> CommitPhaseOne<H> {
 
 /// `Commit₂(i)` payload containing nonce-blended per-wire input commitments
 /// (spec Step 1.4).
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(bound = "H: LabelCommitHasher")]
 pub struct CommitPhaseTwo<H: LabelCommitHasher = DefaultLabelCommitHasher> {
     input_commitments: Vec<LabelCommit<H::Output>>,
+}
+
+impl<H: LabelCommitHasher> Clone for CommitPhaseTwo<H> {
+    fn clone(&self) -> Self {
+        Self {
+            input_commitments: self.input_commitments.clone(),
+        }
+    }
 }
 
 impl<H: LabelCommitHasher> CommitPhaseTwo<H> {
@@ -565,6 +586,31 @@ where
             GarblerStage::Generating { .. } => None,
             GarblerStage::PreparedForEval { indexes_to_eval } => Some(indexes_to_eval),
         }
+    }
+
+    /// Get commitments (both phase one and phase two) when they are ready.
+    /// Returns None if either the nonce hasn't been set (no commit_phase_two call)
+    /// or if the garbler is not in the correct stage.
+    ///
+    /// This method combines the results of commit_phase_one and commit_phase_two
+    /// into a single Option that returns both when ready.
+    pub fn get_commitment<HHasher: LabelCommitHasher>(&self) -> Option<Commitment<HHasher>> {
+        // Check if nonce has been set (meaning commit_phase_two was called)
+        self.nonce.map(|nonce| {
+            let phase_one = self
+                .instances
+                .iter()
+                .map(CommitPhaseOne::<HHasher>::from_instance)
+                .collect();
+
+            let phase_two = self
+                .instances
+                .iter()
+                .map(|instance| CommitPhaseTwo::<HHasher>::from_instance(instance, nonce))
+                .collect();
+
+            (phase_one, phase_two)
+        })
     }
 }
 

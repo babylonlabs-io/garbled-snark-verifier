@@ -6,6 +6,7 @@ pub use garbled_groth16::{GarblerCompressedInput, GarblerInput};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
+pub use super::Commitment;
 pub use crate::cut_and_choose::{
     CommitPhaseOne, CommitPhaseTwo, LabelCommitHasher, OpenForInstance, Seed,
 };
@@ -156,6 +157,16 @@ impl Garbler {
     pub fn finalized_indexes(&self) -> Option<&[usize]> {
         self.inner.finalized_indexes()
     }
+
+    /// Get commitments (both phase one and phase two) when they are ready.
+    /// Returns None if either the nonce hasn't been set (no commit_phase_two call)
+    /// or if the garbler is not in the correct stage.
+    ///
+    /// This method combines the results of commit_phase_one and commit_phase_two
+    /// into a single Option that returns both when ready.
+    pub fn get_commitment<HHasher: LabelCommitHasher>(&self) -> Option<Commitment<HHasher>> {
+        self.inner.get_commitment::<HHasher>()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -186,6 +197,16 @@ impl<H: LabelCommitHasher> Evaluator<H> {
 
     pub fn fill_second_commit(&mut self, commits: Vec<CommitPhaseTwo<H>>) {
         self.inner.fill_second_commit(commits);
+    }
+
+    /// Get commitments (both phase one and phase two) when they are ready.
+    /// Returns None if either the nonce hasn't been set (no commit_phase_two call)
+    /// or if the garbler is not in the correct stage.
+    ///
+    /// This method combines the results of commit_phase_one and commit_phase_two
+    /// into a single Option that returns both when ready.
+    pub fn get_commitment(&self) -> Option<Commitment<H>> {
+        self.inner.get_commitment()
     }
 
     pub fn get_nonce(&self) -> S {

@@ -21,7 +21,7 @@ use crate::{
         StreamingMode, StreamingResult, modes::EvaluateMode,
     },
     cut_and_choose::{
-        CiphertextCommit, CiphertextHandlerProvider, CiphertextSourceProvider,
+        CiphertextCommit, CiphertextHandlerProvider, CiphertextSourceProvider, Commitment,
         DefaultLabelCommitHasher, LabelCommit, LabelCommitHasher, Seed, commit_label_with,
         write_commit_hex,
     },
@@ -177,6 +177,21 @@ where
             second: commits,
             regarbled: false,
         };
+    }
+
+    /// Get commitments (both phase one and phase two) when they are ready.
+    /// Returns None if either the nonce hasn't been set (no commit_phase_two call)
+    /// or if the garbler is not in the correct stage.
+    ///
+    /// This method combines the results of commit_phase_one and commit_phase_two
+    /// into a single Option that returns both when ready.
+    pub fn get_commitment(&self) -> Option<Commitment<H>> {
+        match &self.stage {
+            Stage::Filled { first, second, .. } => Some((first.clone(), second.clone())),
+            #[cfg(feature = "sp1-soldering")]
+            Stage::Soldered { first, second, .. } => Some((first.clone(), second.clone())),
+            _ => None,
+        }
     }
 
     pub fn get_nonce(&self) -> S {

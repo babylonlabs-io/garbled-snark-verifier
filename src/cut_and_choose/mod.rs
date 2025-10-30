@@ -35,6 +35,8 @@ pub mod groth16;
 
 pub type Seed = u64;
 
+pub type Commitment<HHasher> = (Vec<CommitPhaseOne<HHasher>>, Vec<CommitPhaseTwo<HHasher>>);
+
 pub type CiphertextCommit = [u8; 16];
 
 /// Per-wire label commitments used in both `Commit₁` and `Commit₂`.
