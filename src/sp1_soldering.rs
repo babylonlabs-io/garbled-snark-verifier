@@ -98,12 +98,8 @@ pub fn prove_soldering(instances: Vec<Vec<GarbledWire>>, nonce: u128) -> Solderi
     info!("Proved in {}", prove_time.elapsed().as_secs());
     let public_values = core_proof.public_values.clone();
 
-    info!("Raw data from program is {public_values:?}");
-
     let data = deserialize_public_params(public_values.as_slice())
         .expect("failed to deserialize `SolderedLabelsData`");
-
-    info!("Data from program is {data:?}");
 
     // 6. Compress → shrink → wrap (PLONK/STARK outer proof).
     let compress_time = Instant::now();
@@ -139,6 +135,7 @@ pub fn verify_soldering(
     nonce: u128,
     commitments: Vec<Vec<(Sha256Commit, Sha256Commit)>>,
 ) -> bool {
+    info!("start");
     let SolderingProof { proof, deltas } = proof;
 
     let pp = types::SolderedLabelsData {
@@ -149,11 +146,7 @@ pub fn verify_soldering(
         commitments,
     };
 
-    info!("Data to verify program is {pp:?}");
-
     let input_bytes = serialize_public_params(&pp).expect("failed to serialize public params");
-
-    info!("Raw data to verify is {input_bytes:?}");
 
     let prover = SP1Prover::<CpuProverComponents>::new();
     let (_pk, _pk_device, _program, vk) = prover.setup(elf());
@@ -168,6 +161,8 @@ pub fn verify_soldering(
             &artifacts,
         )
         .unwrap();
+
+    info!("end");
 
     true
 }
