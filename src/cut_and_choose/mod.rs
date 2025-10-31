@@ -33,6 +33,9 @@ pub use garbler::{
 
 pub mod groth16;
 
+#[cfg(feature = "test-utils")]
+pub mod embedded;
+
 pub type Seed = u64;
 
 pub type Commitment<HHasher> = (Vec<CommitPhaseOne<HHasher>>, Vec<CommitPhaseTwo<HHasher>>);

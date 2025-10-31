@@ -47,6 +47,19 @@ impl Garbler {
         dir: impl AsRef<std::path::Path>,
         config: Config,
     ) -> std::io::Result<Self> {
+        if let Some(fixture) =
+            crate::cut_and_choose::embedded::try_load_groth16(&config, DEFAULT_CAPACITY)
+        {
+            let inner = generic::Garbler::from_embedded(
+                config,
+                DEFAULT_CAPACITY,
+                fixture.seed_start,
+                fixture.instances,
+            );
+
+            return Ok(Self { inner });
+        }
+
         Ok(Self {
             inner: generic::Garbler::create_test_only(
                 dir,

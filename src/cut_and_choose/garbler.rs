@@ -326,6 +326,37 @@ where
     }
 
     #[cfg(feature = "test-utils")]
+    pub(crate) fn from_embedded(
+        config: Config<I>,
+        live_capacity: usize,
+        seed_start: Seed,
+        mut instances: Vec<GarbledInstance>,
+    ) -> Self {
+        let total = config.total();
+        assert!(
+            instances.len() >= total,
+            "embedded fixture missing instances: have {}, need {}",
+            instances.len(),
+            total
+        );
+
+        instances.truncate(total);
+
+        let seeds = (0..total)
+            .map(|offset| seed_start + offset as Seed)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+
+        Self {
+            stage: GarblerStage::Generating { seeds },
+            instances,
+            live_capacity,
+            config,
+            nonce: None,
+        }
+    }
+
+    #[cfg(feature = "test-utils")]
     /// Test-only constructor that loads cached garbled instances by seed, or garbles and caches.
     ///
     /// Behavior per seed in `seeds`:
@@ -655,14 +686,14 @@ where
 
 #[cfg(feature = "test-utils")]
 pub mod test_utils {
-    use std::{fs, io, path::Path};
+    use std::{any::Any, fs, io, path::Path};
 
     use serde_json;
     #[cfg(feature = "sp1-soldering")]
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::cut_and_choose::get_optimized_pool;
+    use crate::cut_and_choose::{embedded, get_optimized_pool};
 
     pub fn create_with_seeds_or_cache<I, F>(
         dir: &Path,
@@ -769,6 +800,14 @@ pub mod test_utils {
 
         let mut finalize = indexes_to_eval.clone();
         finalize.sort_unstable();
+
+        if let Some(cfg) = (&garbler.config as &dyn Any)
+            .downcast_ref::<Config<crate::garbled_groth16::GarblerCompressedInput>>()
+            && let Some(fixture) =
+                embedded::try_load_groth16_soldering(cfg, garbler.live_capacity, &finalize, nonce)
+        {
+            return Ok(fixture.proof);
+        }
 
         if let Some(dir) = cache_dir {
             fs::create_dir_all(dir)?;
