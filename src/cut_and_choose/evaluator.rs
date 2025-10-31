@@ -71,7 +71,7 @@ impl<H: LabelCommitHasher> Stage<H> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "H: LabelCommitHasher")]
 pub struct Evaluator<
-    I: CircuitInput + Clone + Serialize + DeserializeOwned,
+    I: CircuitInput + Clone + Serialize + DeserializeOwned + 'static,
     H: LabelCommitHasher = DefaultLabelCommitHasher,
 > {
     config: Config<I>,
@@ -89,7 +89,8 @@ where
         + Clone
         + Send
         + Sync
-        + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+        + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>
+        + 'static,
     <I as CircuitInput>::WireRepr: Send + Sync,
     I: Serialize + DeserializeOwned,
     H: LabelCommitHasher,
@@ -225,6 +226,7 @@ where
             + Send
             + Sync
             + Copy,
+        I: 'static,
     {
         let Stage::Filled {
             first,
@@ -451,14 +453,18 @@ where
 
 #[cfg(feature = "test-utils")]
 pub mod test_utils {
-    use std::{collections::HashSet, fs, path::Path, sync::Arc};
+    use std::{any::Any, collections::HashSet, fs, path::Path, sync::Arc};
 
     use serde_json;
 
     use super::*;
-    use crate::cut_and_choose::{
-        garbler::{CommitPhaseOne, CommitPhaseTwo, GarbledInstance},
-        get_optimized_pool,
+    use crate::{
+        cut_and_choose::{
+            embedded,
+            garbler::{CommitPhaseOne, CommitPhaseTwo, GarbledInstance},
+            get_optimized_pool,
+        },
+        garbled_groth16::GarblerCompressedInput,
     };
 
     #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
@@ -475,7 +481,8 @@ pub mod test_utils {
             + Clone
             + Send
             + Sync
-            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
+            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>
+            + 'static,
         <I as CircuitInput>::WireRepr: Send + Sync,
         I: Serialize + DeserializeOwned,
         H: LabelCommitHasher,
@@ -516,6 +523,11 @@ pub mod test_utils {
             None => None,
         };
 
+        let embedded_instances = ((&evaluator.config) as &dyn Any)
+            .downcast_ref::<Config<GarblerCompressedInput>>()
+            .and_then(|cfg| embedded::try_load_groth16(cfg, live_capacity))
+            .map(|fixture| Arc::new(fixture.instances));
+
         get_optimized_pool().install(|| {
             first
                 .par_iter()
@@ -531,6 +543,9 @@ pub mod test_utils {
                         )
                     } else {
                         let cache_path = cache_dir.as_ref().map(|arc| arc.as_path());
+                        let embedded_instance = embedded_instances
+                            .as_ref()
+                            .and_then(|instances| instances.as_slice().get(index_and_seed));
                         check_or_regarble_cached(
                             index_and_seed,
                             first_commit,
@@ -540,6 +555,7 @@ pub mod test_utils {
                             live_capacity,
                             builder,
                             cache_path,
+                            embedded_instance,
                         )
                     }
                 })
@@ -603,6 +619,7 @@ pub mod test_utils {
         live_capacity: usize,
         builder: F,
         cache_dir: Option<&Path>,
+        embedded_instance: Option<&GarbledInstance>,
     ) -> Result<(), ()>
     where
         I: CircuitInput
@@ -620,6 +637,15 @@ pub mod test_utils {
             + Sync
             + Copy,
     {
+        if let Some(instance) = embedded_instance {
+            let c1 = CommitPhaseOne::<H>::from_instance(instance);
+            let c2 = CommitPhaseTwo::<H>::from_instance(instance, nonce);
+
+            if c1 == *first_commit && c2.input_commitments() == second_commit.input_commitments() {
+                return Ok(());
+            }
+        }
+
         if let Some(dir) = cache_dir {
             let path = dir.join(format!("{index_and_seed}.json"));
             if let Ok(bytes) = fs::read(&path)
@@ -837,7 +863,7 @@ impl<H: LabelCommitHasher> fmt::Display for ConsistencyError<H> {
 
 impl<I, H> Evaluator<I, H>
 where
-    I: CircuitInput + Clone + Send + Sync + Serialize + DeserializeOwned,
+    I: CircuitInput + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
     H: LabelCommitHasher,
 {
     /// Evaluate all finalized instances from saved ciphertext files in `folder`.
@@ -1336,7 +1362,7 @@ where
 #[cfg(feature = "sp1-soldering")]
 impl<I> Evaluator<I, Sha256LabelCommitHasher>
 where
-    I: CircuitInput + Clone + Send + Sync + Serialize + DeserializeOwned,
+    I: CircuitInput + Clone + Send + Sync + Serialize + DeserializeOwned + 'static,
 {
     #[allow(clippy::result_large_err)]
     pub fn evaluate_with_soldered_instances_from<E, F, CR>(

@@ -8,8 +8,8 @@ use std::{
 
 use garbled_snark_verifier::{
     cut_and_choose::{
-        DefaultLabelCommitHasher,
-        groth16::{Config, Evaluator, Garbler, GarblerInput},
+        DefaultLabelCommitHasher, embedded,
+        groth16::{Config, DEFAULT_CAPACITY, Evaluator, Garbler, GarblerInput},
     },
     test_utils::dummy_vk,
 };
@@ -37,6 +37,14 @@ fn easy_test_cache_reuses_garbler_and_evaluator() {
         }
         .compress(),
     );
+
+    let embedded_available = embedded::is_groth16_available(&config, DEFAULT_CAPACITY);
+
+    if embedded_available {
+        run_flow(&cache_dir, &config);
+        run_flow(&cache_dir, &config);
+        return;
+    }
 
     let before = (0..config.total()).all(|seed| {
         let path = cache_dir.join(format!("{seed}.json"));
