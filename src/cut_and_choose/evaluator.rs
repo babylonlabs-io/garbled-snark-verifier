@@ -34,7 +34,7 @@ use crate::{
 
 #[derive(Default, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "H: LabelCommitHasher")]
-enum Stage<H: LabelCommitHasher> {
+pub(crate) enum Stage<H: LabelCommitHasher> {
     #[default]
     Empty,
     Created(Vec<CommitPhaseOne<H>>),
@@ -74,13 +74,13 @@ pub struct Evaluator<
     I: CircuitInput + Clone + Serialize + DeserializeOwned,
     H: LabelCommitHasher = DefaultLabelCommitHasher,
 > {
-    config: Config<I>,
+    pub(crate) config: Config<I>,
 
     /// To protect against the second-preimage of input-label hash, this nonce supplements the
     /// commit from `Garbler`
-    nonce: S,
-    to_finalize: Box<[usize]>,
-    stage: Stage<H>,
+    pub(crate) nonce: S,
+    pub(crate) to_finalize: Box<[usize]>,
+    pub(crate) stage: Stage<H>,
 }
 
 impl<I, H> Evaluator<I, H>
@@ -127,6 +127,8 @@ where
             "to_finalize must be <= total"
         );
 
+        assert_eq!(config.total, commits.len());
+
         // Sample without replacement: shuffle 0..total and take first `to_finalize`
         let mut idxs: Vec<usize> = (0..config.total).collect();
         // Fisher-Yates with unbiased rng
@@ -142,27 +144,6 @@ where
             to_finalize: idxs.into_boxed_slice(),
             config,
             nonce: S::from_u128(rng.r#gen()),
-        }
-    }
-
-    // Test-only constructor: identical to `create` but uses a fixed nonce (0) to
-    // speed up e2e tests and make Commit₂ recomputation deterministic without
-    // persisting nonce to disk.
-    #[cfg(feature = "test-utils")]
-    pub fn create_test(config: Config<I>, commits: Vec<CommitPhaseOne<H>>) -> Self {
-        assert!(
-            config.to_finalize <= config.total,
-            "to_finalize must be <= total"
-        );
-
-        // Sample without replacement: shuffle 0..total and take first `to_finalize`
-        let idxs: Vec<usize> = (0..config.to_finalize()).collect();
-
-        Self {
-            stage: Stage::Created(commits),
-            to_finalize: idxs.into_boxed_slice(),
-            config,
-            nonce: S::from_u128(0),
         }
     }
 
@@ -409,289 +390,6 @@ where
         })?;
 
         *regarbled = true;
-
-        Ok(())
-    }
-
-    /// Test-only convenience: reuse cached garbled instances, falling back to
-    /// full regarbling when a cache miss occurs.
-    #[cfg(feature = "test-utils")]
-    #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn full_check_commit_cached<CSourceProvider, CHandlerProvider, F>(
-        &mut self,
-        ciphertext_sources_provider: &CSourceProvider,
-        ciphertext_handler_provider: &CHandlerProvider,
-        live_capacity: usize,
-        builder: F,
-        cache_dir: Option<&std::path::Path>,
-    ) -> Result<(), ()>
-    where
-        CSourceProvider: CiphertextSourceProvider + Send + Sync,
-        CHandlerProvider: CiphertextHandlerProvider + Send + Sync,
-        CHandlerProvider::Handler: 'static,
-        <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
-        F: Fn(
-                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
-                &I::WireRepr,
-            ) -> WireId
-            + Send
-            + Sync
-            + Copy,
-    {
-        test_utils::full_check_commit_test_only(
-            self,
-            ciphertext_sources_provider,
-            ciphertext_handler_provider,
-            live_capacity,
-            builder,
-            cache_dir,
-        )
-    }
-}
-
-#[cfg(feature = "test-utils")]
-pub mod test_utils {
-    use std::{collections::HashSet, fs, path::Path, sync::Arc};
-
-    use serde_json;
-
-    use super::*;
-    use crate::cut_and_choose::{
-        garbler::{CommitPhaseOne, CommitPhaseTwo, GarbledInstance},
-        get_optimized_pool,
-    };
-
-    #[allow(clippy::too_many_arguments, clippy::result_unit_err)]
-    pub fn full_check_commit_test_only<I, H, CSourceProvider, CHandlerProvider, F>(
-        evaluator: &mut Evaluator<I, H>,
-        ciphertext_sources_provider: &CSourceProvider,
-        ciphertext_handler_provider: &CHandlerProvider,
-        live_capacity: usize,
-        builder: F,
-        cache_dir: Option<&Path>,
-    ) -> Result<(), ()>
-    where
-        I: CircuitInput
-            + Clone
-            + Send
-            + Sync
-            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
-        <I as CircuitInput>::WireRepr: Send + Sync,
-        I: Serialize + DeserializeOwned,
-        H: LabelCommitHasher,
-        CSourceProvider: CiphertextSourceProvider + Send + Sync,
-        CHandlerProvider: CiphertextHandlerProvider + Send + Sync,
-        CHandlerProvider::Handler: 'static,
-        <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
-        F: Fn(
-                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
-                &I::WireRepr,
-            ) -> WireId
-            + Send
-            + Sync
-            + Copy,
-    {
-        let Stage::Filled {
-            first,
-            second,
-            regarbled,
-        } = &mut evaluator.stage
-        else {
-            panic!("Can't run regarbling for not filled Evaluator");
-        };
-
-        let to_finalize: HashSet<usize> = evaluator.to_finalize.iter().copied().collect();
-        let inputs_template = evaluator.config.input.clone();
-        let nonce = evaluator.nonce;
-
-        let cache_dir = match cache_dir {
-            Some(dir) => {
-                let path = dir.to_path_buf();
-                if let Err(err) = fs::create_dir_all(&path) {
-                    error!(path = %path.display(), ?err, "failed to create regarble cache dir");
-                    return Err(());
-                }
-                Some(Arc::new(path))
-            }
-            None => None,
-        };
-
-        get_optimized_pool().install(|| {
-            first
-                .par_iter()
-                .zip(second.par_iter())
-                .enumerate()
-                .map(|(index_and_seed, (first_commit, second_commit))| {
-                    if to_finalize.contains(&index_and_seed) {
-                        verify_ciphertext_commit::<H, _, _>(
-                            index_and_seed,
-                            first_commit,
-                            ciphertext_sources_provider,
-                            ciphertext_handler_provider,
-                        )
-                    } else {
-                        let cache_path = cache_dir.as_ref().map(|arc| arc.as_path());
-                        check_or_regarble_cached(
-                            index_and_seed,
-                            first_commit,
-                            second_commit,
-                            nonce,
-                            &inputs_template,
-                            live_capacity,
-                            builder,
-                            cache_path,
-                        )
-                    }
-                })
-                .collect::<Result<Vec<_>, ()>>()
-        })?;
-
-        *regarbled = true;
-
-        Ok(())
-    }
-
-    fn verify_ciphertext_commit<H, CSourceProvider, CHandlerProvider>(
-        index: usize,
-        first_commit: &CommitPhaseOne<H>,
-        ciphertext_sources_provider: &CSourceProvider,
-        ciphertext_handler_provider: &CHandlerProvider,
-    ) -> Result<(), ()>
-    where
-        H: LabelCommitHasher,
-        CSourceProvider: CiphertextSourceProvider + Send + Sync,
-        CHandlerProvider: CiphertextHandlerProvider + Send + Sync,
-        CHandlerProvider::Handler: 'static,
-        <CHandlerProvider::Handler as CiphertextHandler>::Result: 'static + Into<CiphertextCommit>,
-    {
-        let mut source = match ciphertext_sources_provider.source_for(index) {
-            Ok(source) => source,
-            Err(err) => {
-                error!(index, ?err, "failed to get ciphertext source");
-                return Err(());
-            }
-        };
-
-        let mut handler = match ciphertext_handler_provider.handler_for(index) {
-            Ok(handler) => handler,
-            Err(err) => {
-                error!(index, ?err, "failed to create ciphertext handler");
-                return Err(());
-            }
-        };
-
-        while let Some(ct) = source.recv() {
-            handler.handle(ct);
-        }
-
-        let computed_commit: CiphertextCommit = handler.finalize().into();
-        if computed_commit != first_commit.ciphertext_hash() {
-            error!(index, "ciphertext corrupted");
-            return Err(());
-        }
-
-        Ok(())
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn check_or_regarble_cached<I, H, F>(
-        index_and_seed: usize,
-        first_commit: &CommitPhaseOne<H>,
-        second_commit: &CommitPhaseTwo<H>,
-        nonce: S,
-        inputs_template: &I,
-        live_capacity: usize,
-        builder: F,
-        cache_dir: Option<&Path>,
-    ) -> Result<(), ()>
-    where
-        I: CircuitInput
-            + Clone
-            + Send
-            + Sync
-            + EncodeInput<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
-        <I as CircuitInput>::WireRepr: Send + Sync,
-        H: LabelCommitHasher,
-        F: Fn(
-                &mut StreamingMode<GarbleMode<AesNiHasher, AESAccumulatingHash>>,
-                &I::WireRepr,
-            ) -> WireId
-            + Send
-            + Sync
-            + Copy,
-    {
-        if let Some(dir) = cache_dir {
-            let path = dir.join(format!("{index_and_seed}.json"));
-            if let Ok(bytes) = fs::read(&path)
-                && let Ok(instance) = serde_json::from_slice::<GarbledInstance>(&bytes)
-            {
-                let c1 = CommitPhaseOne::<H>::from_instance(&instance);
-                let c2 = CommitPhaseTwo::<H>::from_instance(&instance, nonce);
-
-                if c1 == *first_commit
-                    && c2.input_commitments() == second_commit.input_commitments()
-                {
-                    return Ok(());
-                }
-            }
-        }
-
-        let span = tracing::info_span!("regarble", instance = index_and_seed);
-        let _enter = span.enter();
-        info!("Starting regarbling of circuit (cut-and-choose)");
-
-        let inputs = inputs_template.clone();
-        let hasher = AESAccumulatingHash::default();
-
-        let res: StreamingResult<GarbleMode<AesNiHasher, AESAccumulatingHash>, I, GarbledWire> =
-            CircuitBuilder::streaming_garbling(
-                inputs,
-                live_capacity,
-                index_and_seed as Seed,
-                hasher,
-                builder,
-            );
-
-        let instance: GarbledInstance = res.into();
-
-        let recomputed_first = CommitPhaseOne::<H>::from_instance(&instance);
-        if recomputed_first != *first_commit {
-            error!(index_and_seed, "regarbling failed, first commit mismatch");
-            return Err(());
-        }
-
-        let recomputed_second = CommitPhaseTwo::<H>::from_instance(&instance, nonce);
-        if recomputed_second.input_commitments() != second_commit.input_commitments() {
-            error!(index_and_seed, "regarbling failed, second commit mismatch");
-            return Err(());
-        }
-
-        if let Some(dir) = cache_dir {
-            let path = dir.join(format!("{index_and_seed}.json"));
-            let tmp = path.with_extension("tmp");
-
-            let buf = match serde_json::to_vec(&instance) {
-                Ok(buf) => buf,
-                Err(err) => {
-                    error!(
-                        index_and_seed,
-                        ?err,
-                        "failed to serialize cached garbled instance"
-                    );
-                    return Err(());
-                }
-            };
-
-            if let Err(err) = fs::write(&tmp, &buf) {
-                error!(index_and_seed, path = %tmp.display(), ?err, "failed to write cached garbled instance");
-                return Err(());
-            }
-
-            if let Err(err) = fs::rename(&tmp, &path) {
-                error!(index_and_seed, path = %path.display(), ?err, "failed to persist cached garbled instance");
-                return Err(());
-            }
-        }
 
         Ok(())
     }

@@ -22,11 +22,7 @@ pub mod evaluator;
 pub mod garbler;
 
 pub use ciphertext_repository::*;
-#[cfg(test)]
-pub use evaluator::test_utils as evaluator_easy_test;
 pub use evaluator::{ConsistencyError, Evaluator, EvaluatorCaseInput, SolderingCheckError};
-#[cfg(test)]
-pub use garbler::test_utils as garbler_easy_test;
 pub use garbler::{
     CommitPhaseOne, CommitPhaseTwo, GarbledInstance, Garbler, GarblerStage, OpenForInstance,
 };
