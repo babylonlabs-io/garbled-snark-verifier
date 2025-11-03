@@ -285,13 +285,20 @@ impl<H: LabelCommitHasher> Evaluator<H> {
     #[allow(clippy::result_unit_err)]
     pub fn run_regarbling_test_only(&mut self, seeds: Vec<(usize, Seed)>) -> Result<(), ()> {
         if seeds == vec![(2, 2), (3, 3)] {
-            if let generic::evaluator::Stage::Filled { regarbled, .. } = &mut self.inner.stage {
-                *regarbled = true;
-            }
+            let regarbled = match &mut self.inner.stage {
+                generic::evaluator::Stage::Filled { regarbled, .. } => regarbled,
+                generic::evaluator::Stage::Soldered { regarbled, .. } => regarbled,
+                _ => panic!("Can't run regarbling for not filled Evaluator"),
+            };
+
+            *regarbled = true;
 
             Ok(())
         } else {
-            tracing::error!("seeds mismatch for test-only: {:?} != (2, 2)", seeds);
+            tracing::error!(
+                "seeds mismatch for test-only: {:?} != (2, 2), (3, 3)",
+                seeds
+            );
             Err(())
         }
     }

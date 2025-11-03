@@ -48,6 +48,7 @@ pub(crate) enum Stage<H: LabelCommitHasher> {
         first: Vec<CommitPhaseOne<H>>,
         second: Vec<CommitPhaseTwo<H>>,
         soldering_deltas: Vec<Vec<(S, S)>>,
+        regarbled: bool,
     },
 }
 
@@ -331,13 +332,19 @@ where
             + Sync
             + Copy,
     {
-        let Stage::Filled {
-            first,
-            second,
-            regarbled,
-        } = &mut self.stage
-        else {
-            panic!("Can't run regarbling for not filled Evaluator");
+        let (first, second, regarbled) = match &mut self.stage {
+            Stage::Filled {
+                first,
+                second,
+                regarbled,
+            } => (first, second, regarbled),
+            Stage::Soldered {
+                first,
+                second,
+                regarbled,
+                ..
+            } => (first, second, regarbled),
+            _ => panic!("Can't run regarbling for not filled Evaluator"),
         };
 
         let inputs = self.config.input.clone();
@@ -779,7 +786,7 @@ where
         let Stage::Filled {
             first: first_commits,
             second: second_commits,
-            regarbled: true,
+            regarbled,
         } = mem::take(&mut self.stage)
         else {
             panic!()
@@ -987,6 +994,7 @@ where
             first: first_commits,
             second: second_commits,
             soldering_deltas: soldering_deltas_s,
+            regarbled,
         };
 
         Ok(verified_public_params)
