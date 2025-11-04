@@ -47,11 +47,11 @@ pub fn main() {
         let base_wire = &base_instance[wire_id];
 
         // Compute base commitments
-        hash_label_into(&mut hasher, &base_wire.0, &mut base_commitment[wire_id].0);
-        hash_label_into(&mut hasher, &base_wire.1, &mut base_commitment[wire_id].1);
+        hash_label_into(&mut hasher, &base_wire.label0, &mut base_commitment[wire_id].0);
+        hash_label_into(&mut hasher, &base_wire.label1, &mut base_commitment[wire_id].1);
 
         // Compute base nonce commitments in the same loop
-        let label0_with_nonce = base_wire.0.bitxor(nonce);
+        let label0_with_nonce = base_wire.label0.bitxor(nonce);
         let label0_be = rkyv::rend::u128_be::from_native(label0_with_nonce);
         hash_label_into(
             &mut hasher,
@@ -59,7 +59,7 @@ pub fn main() {
             &mut base_nonce_commitment[wire_id].0,
         );
 
-        let label1_with_nonce = base_wire.1.bitxor(nonce);
+        let label1_with_nonce = base_wire.label1.bitxor(nonce);
         let label1_be = rkyv::rend::u128_be::from_native(label1_with_nonce);
         hash_label_into(
             &mut hasher,
@@ -74,18 +74,18 @@ pub fn main() {
             // Hash each label individually like base instance, reusing the hasher
             hash_label_into(
                 &mut hasher,
-                &instance_wire.0,
+                &instance_wire.label0,
                 &mut commitments[idx][wire_id].0,
             );
             hash_label_into(
                 &mut hasher,
-                &instance_wire.1,
+                &instance_wire.label1,
                 &mut commitments[idx][wire_id].1,
             );
 
-            let delta0 = base_wire.0.bitxor(instance_wire.0);
-            let delta1 = base_wire.1.bitxor(instance_wire.1);
-            deltas[idx].push((delta0, delta1));
+            let delta0 = base_wire.label0.bitxor(instance_wire.label0);
+            let delta1 = base_wire.label1.bitxor(instance_wire.label1);
+            deltas[idx].push(WireDelta { delta0, delta1 });
         }
     }
 

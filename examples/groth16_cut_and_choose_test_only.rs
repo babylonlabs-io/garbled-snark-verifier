@@ -107,6 +107,9 @@ fn run_garbler_test_only(
 
     // Step 4 — send a dummy soldering proof (no heavy proving)
     let proof = g.do_soldering_test_only();
+    //let rproof = g.do_soldering();
+    //assert_eq!(proof, rproof);
+
     g2e_tx
         .send(SetupBroadcast::SolderingProof(Box::new(proof)))
         .expect("send soldering proof");
