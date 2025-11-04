@@ -10,7 +10,7 @@ pub mod types;
 pub use types::*;
 
 #[inline(always)]
-fn hash_label_into(hasher: &mut Sha256, label: &rkyv::rend::u128_le, out: &mut [u8; 32]) {
+fn hash_label_into(hasher: &mut Sha256, label: &rkyv::rend::u128_be, out: &mut [u8; 32]) {
     hasher.update(label.to_native().to_be_bytes().as_slice());
     hasher.finalize_into_reset(out.into());
 }
@@ -52,18 +52,18 @@ pub fn main() {
 
         // Compute base nonce commitments in the same loop
         let label0_with_nonce = base_wire.0.bitxor(nonce);
-        let label0_le = rkyv::rend::u128_le::from_native(label0_with_nonce);
+        let label0_be = rkyv::rend::u128_be::from_native(label0_with_nonce);
         hash_label_into(
             &mut hasher,
-            &label0_le,
+            &label0_be,
             &mut base_nonce_commitment[wire_id].0,
         );
 
         let label1_with_nonce = base_wire.1.bitxor(nonce);
-        let label1_le = rkyv::rend::u128_le::from_native(label1_with_nonce);
+        let label1_be = rkyv::rend::u128_be::from_native(label1_with_nonce);
         hash_label_into(
             &mut hasher,
-            &label1_le,
+            &label1_be,
             &mut base_nonce_commitment[wire_id].1,
         );
 

@@ -34,6 +34,34 @@ pub struct SolderingProof {
     pub deltas: Vec<Vec<(u128, u128)>>,
 }
 
+impl PartialEq for SolderingProof {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            proof:
+                Groth16Bn254Proof {
+                    public_inputs: s_pp,
+                    encoded_proof: s_ep,
+                    raw_proof: e_rp,
+                    groth16_vkey_hash: s_vk,
+                },
+            deltas: s_d,
+        } = self;
+        let Self {
+            proof:
+                Groth16Bn254Proof {
+                    public_inputs: o_pp,
+                    encoded_proof: o_ep,
+                    raw_proof: o_rp,
+                    groth16_vkey_hash: o_vk,
+                },
+            deltas: e_d,
+        } = other;
+
+        s_pp == o_pp && s_ep == o_ep && e_rp == o_rp && s_vk == o_vk && s_d == e_d
+    }
+}
+impl Eq for SolderingProof {}
+
 /// Serializes the wires input into the format expected by the SP1 guest.
 pub fn serialize_wires_input(input: &types::WiresInput) -> Result<AlignedVec, rkyv::rancor::Error> {
     rkyv::to_bytes::<rkyv::rancor::Error>(input)
@@ -174,17 +202,15 @@ pub fn hardcoded_proof_soldering(instances: Vec<Vec<GarbledWire>>, nonce: u128) 
     SolderingProof {
         proof: sp1_prover::Groth16Bn254Proof {
             public_inputs: [
-                "384630206637517497286131497064272249705984097246412679422394076990036191324".to_owned(),
-                "9005189506962362368226395953289644699027290147366442314717488082805955124963".to_owned(),
+                "387671156232818317625144422353023909121098337865668672818985222163942404986".to_owned(),
+                "87098716350152083817763536527862345534416507348391092344550598338563145342".to_owned(),
             ],
-            encoded_proof: "11b68a32c5b63d079fc5cadb8c641ac9a814d3d0397744a59123f27ef9e36c102fee53c19fa89f6f28a0111ab11952d01c0eccbaa5c1b33ec1543872545f47f115e0cee83a793ef8c3b5f914af85881c516a276e9ad3732d143488916472755b1200cf3b314d800bf0fb9b668d1062107ca50d99cb531e95b373568e2d43031d0d277b6bfd30d7a4c6563655c12b6be66699a08d8df469396a1b92db0fbab4c3226150d7f6128fa36d8a6817471299fd822b43d947505fa00e9dbccb5f904f3e1eb0125794d341e0c4fa9fb365ca3b1a4511d2b7a3ab15f03c15dff4d8b6e75b0d2a0d6a15f7ce2fdcd6535f29b292b7474f6d9267d1416492dc8cd61dccfa98".to_owned(),
-            raw_proof: "11b68a32c5b63d079fc5cadb8c641ac9a814d3d0397744a59123f27ef9e36c102fee53c19fa89f6f28a0111ab11952d01c0eccbaa5c1b33ec1543872545f47f115e0cee83a793ef8c3b5f914af85881c516a276e9ad3732d143488916472755b1200cf3b314d800bf0fb9b668d1062107ca50d99cb531e95b373568e2d43031d0d277b6bfd30d7a4c6563655c12b6be66699a08d8df469396a1b92db0fbab4c3226150d7f6128fa36d8a6817471299fd822b43d947505fa00e9dbccb5f904f3e1eb0125794d341e0c4fa9fb365ca3b1a4511d2b7a3ab15f03c15dff4d8b6e75b0d2a0d6a15f7ce2fdcd6535f29b292b7474f6d9267d1416492dc8cd61dccfa980000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_owned(), 
-            groth16_vkey_hash: [
-                164, 89, 76, 89, 187, 193, 66, 243,
+            encoded_proof: "20d4db195b688a7ff6f6187279f5a19724703c82266d2587fec16bbaf4c7aacd04ea64dfd236ef2e9374aff0b40d692187616206a4d62053bbf8c9cf357572be2e373e38da492dde2bc7b130d5c3dc763a288ddf5e8d85f33f86ee8e114ec1cf0dc857753e7785c3bd5f2b9d831fcf386ce42c3ceee80d14b8f6d936a5597be4024a25f67067a6015da8fe50e6fb467c96ccf2726d7ccd78f870cc41996a47a52db0f19affa26ac8bc8a63b46199f66503ed21aa696fd021443f76e9134663951b1a1e923c216d106723e5e9881e5d38e63733256d34d28f1783cabe16a5e51f043b4147aef233e02838ed65ea0af9c92a797ebfdc7bd32d926b5d2b728ac269".to_owned(),
+            raw_proof: "20d4db195b688a7ff6f6187279f5a19724703c82266d2587fec16bbaf4c7aacd04ea64dfd236ef2e9374aff0b40d692187616206a4d62053bbf8c9cf357572be2e373e38da492dde2bc7b130d5c3dc763a288ddf5e8d85f33f86ee8e114ec1cf0dc857753e7785c3bd5f2b9d831fcf386ce42c3ceee80d14b8f6d936a5597be4024a25f67067a6015da8fe50e6fb467c96ccf2726d7ccd78f870cc41996a47a52db0f19affa26ac8bc8a63b46199f66503ed21aa696fd021443f76e9134663951b1a1e923c216d106723e5e9881e5d38e63733256d34d28f1783cabe16a5e51f043b4147aef233e02838ed65ea0af9c92a797ebfdc7bd32d926b5d2b728ac2690000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            groth16_vkey_hash: [164, 89, 76, 89, 187, 193, 66, 243,
                 184, 28, 62, 203, 127, 80, 167, 195,
                 75, 201, 175, 124, 76, 68, 75, 93,
-                72, 183, 149, 66, 126, 40, 89, 19,
-            ],
+                72, 183, 149, 66, 126, 40, 89, 19],
         },
         deltas: vec![
             vec![

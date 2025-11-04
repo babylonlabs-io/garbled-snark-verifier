@@ -75,9 +75,13 @@ fn main() {
     let nonce = S::from_u128(0);
     let _commit2 = g.commit_phase_two::<ExampleHasher>(nonce);
 
-    info!("Step 2 — Open commit with finalize indexes [2, 3]");
     // With 4 total instances (0, 1, 2, 3) and 2 to finalize, we pick [2, 3]
-    let finalize_indexes = vec![2, 3];
+    let finalize_indexes =
+        ccn::Evaluator::create_test_only(cfg, g.commit_phase_one::<ExampleHasher>())
+            .finalized_indexes()
+            .to_vec();
+
+    info!("Step 2 — Open commit with finalize indexes [{finalize_indexes:?}]");
     let _open_commit = g.open_commit_without_ciphertexts(finalize_indexes);
 
     info!("Step 4 — Generating REAL soldering proof (this may take a while)...");
