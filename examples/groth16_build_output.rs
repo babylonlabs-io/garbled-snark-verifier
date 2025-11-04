@@ -49,7 +49,8 @@ fn main() {
     let inputs = garbled_groth16::GarblerInput {
         public_params_len: 0,
         vk: garbled_snark_verifier::test_utils::dummy_vk(),
-    };
+    }
+    .compress();
 
     info!("Garbling seeds 0..=3 (in parallel) and emitting examples/output.rs...");
 
@@ -65,7 +66,7 @@ fn main() {
                     CAPACITY,
                     seed,
                     AESAccumulatingHash::default(),
-                    garbled_groth16::verify,
+                    garbled_groth16::verify_compressed,
                 );
             let instance: garbled_snark_verifier::cut_and_choose::GarbledInstance = res.into();
             (seed, instance)
