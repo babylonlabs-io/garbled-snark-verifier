@@ -985,7 +985,7 @@ where
             .map(|instance_deltas| {
                 instance_deltas
                     .iter()
-                    .map(|(d0, d1)| (S::from_u128(*d0), S::from_u128(*d1)))
+                    .map(|delta| (S::from_u128(delta.delta0), S::from_u128(delta.delta1)))
                     .collect()
             })
             .collect();
