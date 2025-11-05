@@ -1,6 +1,5 @@
 use std::{path::PathBuf, time::Instant};
 
-use rkyv::util::AlignedVec;
 use serde::{Deserialize, Serialize};
 use sp1_core_executor::SP1ContextBuilder;
 use sp1_core_machine::io::SP1Stdin;
@@ -81,26 +80,29 @@ impl PartialEq for SolderingProof {
 }
 impl Eq for SolderingProof {}
 
+fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::standard().with_fixed_int_encoding()
+}
+
 /// Serializes the wires input into the format expected by the SP1 guest.
-pub fn serialize_wires_input(input: &types::WiresInput) -> Result<AlignedVec, rkyv::rancor::Error> {
-    rkyv::to_bytes::<rkyv::rancor::Error>(input)
+pub fn serialize_wires_input(
+    input: &types::WiresInput,
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::encode_to_vec(input, bincode_config())
 }
 
 /// Serializes the soldering public parameters.
 pub fn serialize_public_params(
     params: &types::SolderedLabelsData,
-) -> Result<AlignedVec, rkyv::rancor::Error> {
-    rkyv::to_bytes::<rkyv::rancor::Error>(params)
+) -> Result<Vec<u8>, bincode::error::EncodeError> {
+    bincode::encode_to_vec(params, bincode_config())
 }
 
 /// Deserializes the soldering public parameters emitted by the SP1 guest.
 pub fn deserialize_public_params(
     bytes: &[u8],
-) -> Result<types::SolderedLabelsData, rkyv::rancor::Error> {
-    // Safety: The SP1 program writes out a valid `SolderedLabelsData` archive and
-    // we only call this on buffers produced by that program or in tests that
-    // mirror its serialization logic.
-    unsafe { rkyv::from_bytes_unchecked::<types::SolderedLabelsData, rkyv::rancor::Error>(bytes) }
+) -> Result<types::SolderedLabelsData, bincode::error::DecodeError> {
+    bincode::decode_from_slice(bytes, bincode_config()).map(|(value, _)| value)
 }
 
 fn groth16_artifacts_dir() -> PathBuf {
@@ -133,7 +135,7 @@ pub fn prove_soldering(instances: Vec<Vec<GarbledWire>>, nonce: u128) -> Solderi
     let input_bytes = serialize_wires_input(&input).expect("failed to serialize wires input");
 
     let mut stdin = SP1Stdin::new();
-    stdin.write(&input_bytes.as_slice()); // example input
+    stdin.write_slice(input_bytes.as_slice()); // example input
 
     // 3. Create proving/verification keys.
     let (_pk, pk_device, program, vk) = prover.setup(elf());
@@ -224,11 +226,11 @@ pub fn hardcoded_proof_soldering(instances: Vec<Vec<GarbledWire>>, nonce: u128) 
     SolderingProof {
         proof: sp1_prover::Groth16Bn254Proof {
             public_inputs: [
-                "80688959737541061640225621272807750520902322647503710220110638146251466850".to_owned(),
-                "87098716350152083817763536527862345534416507348391092344550598338563145342".to_owned(),
+                "363809788846591271448263435425137728721110333278828693882589558539834159295".to_owned(),
+                "10844231475065088027875749066718136481482802104696418721934942567430578640624".to_owned(),
             ],
-            encoded_proof: "2785e8059612324dacca38036786db60efca4ff509c6ff7e3b167eeece9db8e911459fc7846815bf8a983e4d0f7820dee72a457f24a9c6d14e131e9a41106e2e287ec1d047567ad7fa9cca26854a064a7d2dd8361e0505654f8b04a234995d5f1ba2dac9fdd5cd7b73507d30447befec322d66c4b01cb5094a7bacf3eb4eff172052468cbaaa0d46cfdc77a8c929ffb96ae631c82cd1c08864ee2a1a8760dc0827bb530f58d92fe2b4ee3be8d8ef47aafcb36e0d8c2b5c8d9948b0bdb32155641fbbbeb61767a019f294d646fd46b1d5cf3ad79f13431789a1625c1f083e8dec2ccc0eae9fe48a45056e37e64c28a203cc91c8f80fb399fa32ee8513ac95e01c".to_owned(),
-            raw_proof: "2785e8059612324dacca38036786db60efca4ff509c6ff7e3b167eeece9db8e911459fc7846815bf8a983e4d0f7820dee72a457f24a9c6d14e131e9a41106e2e287ec1d047567ad7fa9cca26854a064a7d2dd8361e0505654f8b04a234995d5f1ba2dac9fdd5cd7b73507d30447befec322d66c4b01cb5094a7bacf3eb4eff172052468cbaaa0d46cfdc77a8c929ffb96ae631c82cd1c08864ee2a1a8760dc0827bb530f58d92fe2b4ee3be8d8ef47aafcb36e0d8c2b5c8d9948b0bdb32155641fbbbeb61767a019f294d646fd46b1d5cf3ad79f13431789a1625c1f083e8dec2ccc0eae9fe48a45056e37e64c28a203cc91c8f80fb399fa32ee8513ac95e01c0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+            encoded_proof: "261db821d829b8c5ee282e2149f3fe2b86235a23eacca1f0ba1d0463024304652674742d7f4345b5f1bb3681eb5e6200c606dfe9106c372a1113b0a73912563115011a5ae8c15480573193313a5fa70338885f5edc45be48a9e4d7704540a9b428d20db6b486bb4e3a73af18e57fadea34f60d57f4d2f1c4f4cc09546ff86570031edbba8862dd49de18814e898397c02bf167b81078af1708490291ce55c7e20dca24988feea5c80db2fbe8de3bc55cd421f2f1de8681076133238bcb1fc2a51dae794904189cb2058379e1bbf5ac8618ffc52dc980a80ef90d6edc3f9f89f70f7cccf9e0ed725dda961f50aadda7e6ed1552731a8552dc2645d25a9deef09f".to_owned(),
+            raw_proof: "261db821d829b8c5ee282e2149f3fe2b86235a23eacca1f0ba1d0463024304652674742d7f4345b5f1bb3681eb5e6200c606dfe9106c372a1113b0a73912563115011a5ae8c15480573193313a5fa70338885f5edc45be48a9e4d7704540a9b428d20db6b486bb4e3a73af18e57fadea34f60d57f4d2f1c4f4cc09546ff86570031edbba8862dd49de18814e898397c02bf167b81078af1708490291ce55c7e20dca24988feea5c80db2fbe8de3bc55cd421f2f1de8681076133238bcb1fc2a51dae794904189cb2058379e1bbf5ac8618ffc52dc980a80ef90d6edc3f9f89f70f7cccf9e0ed725dda961f50aadda7e6ed1552731a8552dc2645d25a9deef09f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_owned(),
             groth16_vkey_hash: [164, 89, 76, 89, 187, 193, 66, 243,
                 184, 28, 62, 203, 127, 80, 167, 195,
                 75, 201, 175, 124, 76, 68, 75, 93,
@@ -1497,7 +1499,7 @@ mod tests {
             serialize_wires_input(&input).expect("failed to serialize wires input for execution");
 
         let mut stdin = SP1Stdin::new();
-        stdin.write(&input_bytes.as_slice());
+        stdin.write_slice(input_bytes.as_slice());
 
         let (public_values, report) =
             execute_only(elf(), &stdin).expect("guest execution should succeed");

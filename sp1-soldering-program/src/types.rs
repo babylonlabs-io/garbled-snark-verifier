@@ -1,8 +1,6 @@
-use rkyv::{Archive, Deserialize, Serialize};
+use bincode::{Decode, Encode};
 
-#[repr(C, align(16))]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct Wire {
     pub label0: u128,
     pub label1: u128,
@@ -29,9 +27,7 @@ impl From<Wire> for (u128, u128) {
     }
 }
 
-#[repr(C, align(16))]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-#[rkyv(derive(Debug, Clone, Copy, PartialEq, Eq))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
 pub struct WireDelta {
     pub delta0: u128,
     pub delta1: u128,
@@ -61,15 +57,13 @@ impl From<WireDelta> for (u128, u128) {
 pub type InstancesWires = Vec<Wire>;
 pub type Sha256Commit = [u8; 32];
 
-#[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
-#[rkyv(derive(Debug))]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct WiresInput {
     pub instances_wires: Vec<InstancesWires>,
     pub nonce: u128,
 }
 
-#[repr(C, align(16))]
-#[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Encode, Decode)]
 pub struct SolderedLabelsData {
     pub nonce: u128,
     pub deltas: Vec<Vec<WireDelta>>,
