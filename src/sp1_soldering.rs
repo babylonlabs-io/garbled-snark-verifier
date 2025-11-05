@@ -1264,6 +1264,7 @@ pub fn hardcoded_proof_soldering(instances: Vec<Vec<GarbledWire>>, nonce: u128) 
 mod tests {
     use std::time::Instant;
 
+    use sp1_core_executor::{ExecutionError, ExecutionReport, SP1Context};
     use test_log::test;
     use tracing::info;
 
@@ -1321,6 +1322,21 @@ mod tests {
             nonce,
             commitments,
         }
+    }
+
+    fn execute_only(
+        elf: &[u8],
+        stdin: &SP1Stdin,
+    ) -> Result<(SP1PublicValues, ExecutionReport), ExecutionError> {
+        let prover = SP1Prover::<CpuProverComponents>::new();
+
+        // Mirror the defaults from the SDK.
+        let mut ctx_builder = SP1Context::builder();
+        ctx_builder.calculate_gas(true);
+        let context = ctx_builder.build();
+
+        let (public_values, _digest, report) = prover.execute(elf, stdin, context)?;
+        Ok((public_values, report))
     }
 
     #[test]
@@ -1439,6 +1455,64 @@ mod tests {
         assert_eq!(
             decoded, recovered,
             "reserialized params differ from original deserialize output"
+        );
+    }
+
+    #[test]
+    fn execute_guest_emits_expected_public_values() {
+        use rand::{Rng, SeedableRng, rngs::StdRng};
+
+        let wires = 1019;
+        let total_instances = 7;
+        let additional_instances = total_instances - 1;
+
+        let mut rng = StdRng::seed_from_u64(1337);
+        let nonce: u128 = rng.r#gen();
+        let delta: u128 = rng.r#gen::<u128>() | 1;
+
+        let mut raw_instances = Vec::with_capacity(total_instances);
+
+        for _ in 0..=additional_instances {
+            let mut raw_labels = Vec::with_capacity(wires);
+
+            for _ in 0..wires {
+                let label0: u128 = rng.r#gen();
+                let label1: u128 = label0 ^ delta;
+                raw_labels.push((label0, label1));
+            }
+
+            raw_instances.push(raw_labels);
+        }
+
+        let input = types::WiresInput {
+            instances_wires: raw_instances
+                .iter()
+                .cloned()
+                .map(|instance| instance.into_iter().map(types::Wire::from).collect())
+                .collect(),
+            nonce,
+        };
+
+        let input_bytes =
+            serialize_wires_input(&input).expect("failed to serialize wires input for execution");
+
+        let mut stdin = SP1Stdin::new();
+        stdin.write(&input_bytes.as_slice());
+
+        let (public_values, report) =
+            execute_only(elf(), &stdin).expect("guest execution should succeed");
+
+        assert!(
+            report.total_instruction_count() > 0,
+            "execution report should record instructions"
+        );
+
+        let recovered = deserialize_public_params(public_values.as_slice())
+            .expect("failed to decode public params");
+        let expected = build_expected_public_params(&raw_instances, nonce);
+        assert_eq!(
+            recovered, expected,
+            "unexpected public params from execution"
         );
     }
 

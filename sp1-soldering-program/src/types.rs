@@ -71,9 +71,9 @@ pub struct WiresInput {
 #[repr(C, align(16))]
 #[derive(Archive, Deserialize, Serialize, Debug, PartialEq)]
 pub struct SolderedLabelsData {
+    pub nonce: u128,
     pub deltas: Vec<Vec<WireDelta>>,
     pub base_commitment: Vec<(Sha256Commit, Sha256Commit)>,
     pub base_nonce_commitment: Vec<(Sha256Commit, Sha256Commit)>,
-    pub nonce: u128,
     pub commitments: Vec<Vec<(Sha256Commit, Sha256Commit)>>,
 }
