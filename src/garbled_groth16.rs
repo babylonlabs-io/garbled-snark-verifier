@@ -3,9 +3,10 @@
 use std::{iter, ops::Deref};
 
 use ark_bn254::{Bn254, Fr};
-use ark_ec::AffineRepr;
+use ark_ec::{AffineRepr, models::short_weierstrass::SWCurveConfig};
 use ark_ff::{AdditiveGroup, Field, PrimeField};
 use ark_groth16::VerifyingKey;
+use ark_snark::SNARK;
 use itertools::Itertools;
 use num_bigint::BigUint;
 use serde::{Deserialize, Serialize};
@@ -751,5 +752,140 @@ impl EvaluatorCompressedInput {
             )
             .chain(self.c.x.iter().chain(iter::once(&self.c.y_flag)))
             .cloned()
+    }
+
+    /// Restore a Groth16 proof from the evaluated wire representation.
+    ///
+    /// This performs the reverse operation of `EvaluatorCompressedInput::new`,
+    /// converting the compressed evaluated wires back into a standard Groth16 proof.
+    ///
+    /// # Returns
+    /// The reconstructed `SnarkProof` (ark_groth16::Proof<Bn254>)
+    pub fn to_proof(&self) -> SnarkProof {
+        // Helper: extract bit values from EvaluatedFrWires
+        fn bits_from_evaluated(wires: &EvaluatedFrWires) -> Vec<bool> {
+            wires.iter().map(|ew| ew.value).collect()
+        }
+
+        // Helper: convert bits to Fq (reverse of FqWire::to_bits)
+        fn bits_to_fq(bits: &[bool]) -> ark_bn254::Fq {
+            FqWire::from_bits(bits.to_vec())
+        }
+
+        // Helper: convert bits to Fq2 (reverse of Fq2Wire::to_bits)
+        fn bits_to_fq2(c0_bits: &[bool], c1_bits: &[bool]) -> ark_bn254::Fq2 {
+            Fq2Wire::from_bits((c0_bits.to_vec(), c1_bits.to_vec()))
+        }
+
+        // Helper: decompress G1 point (x_montgomery, y_flag) -> G1Affine
+        fn decompress_g1(x_m: ark_bn254::Fq, y_flag: bool) -> ark_bn254::G1Affine {
+            // Convert from Montgomery to standard form
+            let x = FqWire::from_montgomery(x_m);
+
+            // Compute y^2 = x^3 + b where b = 3 for BN254 G1
+            let b = ark_bn254::g1::Config::COEFF_B;
+            let x_cubed = x * x * x;
+            let y_squared = x_cubed + b;
+
+            // Take square root (y_squared is guaranteed to be a QR for valid points)
+            let y_candidate = y_squared
+                .sqrt()
+                .expect("Invalid G1 point: y^2 is not a quadratic residue");
+
+            // Select the correct square root based on y_flag
+            // y_flag == true means we want the root where sqrt(y^2) == y
+            let y_candidate_sq = y_candidate.square();
+            let y_candidate_sqrt = y_candidate_sq.sqrt().expect("y^2 must be QR");
+            let candidate_flag = y_candidate_sqrt.eq(&y_candidate);
+
+            let y = if candidate_flag == y_flag {
+                y_candidate
+            } else {
+                -y_candidate
+            };
+
+            ark_bn254::G1Affine::new_unchecked(x, y)
+        }
+
+        // Helper: decompress G2 point (x_montgomery, y_flag) -> G2Affine
+        fn decompress_g2(x_m: ark_bn254::Fq2, y_flag: bool) -> ark_bn254::G2Affine {
+            // Convert from Montgomery to standard form
+            let x = Fq2Wire::from_montgomery(x_m);
+
+            // Compute y^2 = x^3 + b' where b' = 3/(9+u) for BN254 G2
+            let b = ark_bn254::g2::Config::COEFF_B;
+            let x_cubed = x * x * x;
+            let y_squared = x_cubed + b;
+
+            // Take square root in Fq2
+            let y_candidate = y_squared
+                .sqrt()
+                .expect("Invalid G2 point: y^2 is not a quadratic residue");
+
+            // Select the correct square root based on y_flag
+            let y_candidate_sq = y_candidate.square();
+            let y_candidate_sqrt = y_candidate_sq.sqrt().expect("y^2 must be QR in Fq2");
+            let candidate_flag = y_candidate_sqrt.eq(&y_candidate);
+
+            let y = if candidate_flag == y_flag {
+                y_candidate
+            } else {
+                -y_candidate
+            };
+
+            ark_bn254::G2Affine::new_unchecked(x, y)
+        }
+
+        // Reconstruct point A (G1)
+        let a_x_bits = bits_from_evaluated(&self.a.x);
+        let a_x_m = bits_to_fq(&a_x_bits);
+        let a_y_flag = self.a.y_flag.value;
+        let a = decompress_g1(a_x_m, a_y_flag);
+
+        // Reconstruct point B (G2)
+        let b_x0_bits = bits_from_evaluated(&self.b.x[0]);
+        let b_x1_bits = bits_from_evaluated(&self.b.x[1]);
+        let b_x_m = bits_to_fq2(&b_x0_bits, &b_x1_bits);
+        let b_y_flag = self.b.y_flag.value;
+        let b = decompress_g2(b_x_m, b_y_flag);
+
+        // Reconstruct point C (G1)
+        let c_x_bits = bits_from_evaluated(&self.c.x);
+        let c_x_m = bits_to_fq(&c_x_bits);
+        let c_y_flag = self.c.y_flag.value;
+        let c = decompress_g1(c_x_m, c_y_flag);
+
+        // Build and return the proof
+        ark_groth16::Proof { a, b, c }
+    }
+
+    /// Restore public inputs from the evaluated wire representation.
+    ///
+    /// # Returns
+    /// The reconstructed public parameters (Vec<Fr>)
+    pub fn to_public_inputs(&self) -> PublicParams {
+        self.public
+            .iter()
+            .map(|fr_wires| {
+                let bits: Vec<bool> = fr_wires.iter().map(|ew| ew.value).collect();
+                FrWire::from_bits(bits)
+            })
+            .collect()
+    }
+
+    /// Verify the proof by reconstructing it and using native arkworks verification.
+    ///
+    /// This method:
+    /// 1. Reconstructs the proof from compressed evaluated wires
+    /// 2. Reconstructs public inputs from evaluated wires
+    /// 3. Performs native Groth16 verification (no garbled circuit execution)
+    ///
+    /// # Returns
+    /// `true` if the proof is valid, `false` otherwise
+    pub fn verify(&self) -> bool {
+        let proof = self.to_proof();
+        let public_inputs = self.to_public_inputs();
+
+        ark_groth16::Groth16::<Bn254>::verify(&self.vk, &public_inputs, &proof).unwrap_or(false)
     }
 }
