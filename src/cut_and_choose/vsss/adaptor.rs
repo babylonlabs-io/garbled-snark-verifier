@@ -239,6 +239,7 @@ mod bitvm_tests {
         Address, Amount, Network, ScriptBuf, TapSighash, TapSighashType, Transaction, TxIn, TxOut,
         Witness, XOnlyPublicKey,
         absolute::LockTime,
+        consensus,
         hashes::Hash,
         key::{Secp256k1, UntweakedPublicKey},
         sighash::{Prevouts, ScriptPath, SighashCache},
@@ -252,6 +253,10 @@ mod bitvm_tests {
     };
 
     use super::*;
+
+    fn adaptor_secret_fr(sk: &SigningKey) -> Fr {
+        fr_from_be_bytes_mod_order(sk.to_bytes().as_slice())
+    }
 
     pub(crate) fn unspendable_pubkey() -> UntweakedPublicKey {
         XOnlyPublicKey::from_str("50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0")
@@ -275,6 +280,114 @@ mod bitvm_tests {
             spend_info.merkle_root(),
             network,
         )
+    }
+
+    fn multi_sig_script(evaluator_pubkey: &[u8], num_sigs: usize) -> ScriptBuf {
+        assert!(num_sigs >= 1, "must build at least one signature check");
+
+        script! {
+            { evaluator_pubkey.to_vec() }
+
+            for _ in 0..num_sigs - 1 {
+                OP_TUCK
+                OP_CHECKSIGVERIFY
+                OP_CODESEPARATOR
+            }
+
+            OP_CHECKSIG
+        }
+        .compile()
+    }
+
+    fn code_separator_pos(i: usize) -> u32 {
+        if i == 0 {
+            0xFFFF_FFFF
+        } else {
+            (3 * i + 32) as u32
+        }
+    }
+
+    fn build_multi_sig_tx(num_sigs: usize) -> (Transaction, Vec<TxOut>, Vec<Vec<u8>>, Vec<u8>) {
+        let evaluator_privkey = SigningKey::random(&mut rand::thread_rng());
+        let evaluator_pubkey = evaluator_privkey.verifying_key().as_affine().x().to_vec();
+        let evaluator_secret_fr = adaptor_secret_fr(&evaluator_privkey);
+        let mut rng = rand::thread_rng();
+
+        let script = multi_sig_script(&evaluator_pubkey, num_sigs);
+        let spend_info = spend_info_from_script(script.clone());
+        let address = address_from_spend_info(&spend_info, Network::Testnet);
+        let mut tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn::default()],
+            output: vec![TxOut {
+                value: Amount::from_sat(2000),
+                script_pubkey: address.script_pubkey(),
+            }],
+        };
+
+        let prevouts = vec![TxOut {
+            value: Amount::from_sat(2000),
+            script_pubkey: address.script_pubkey(),
+        }];
+        let mut sighash_cache = SighashCache::new(&tx);
+
+        let sigs = (0..num_sigs)
+            .map(|i| {
+                let garbler_secret_fr = Fr::rand(&mut rng);
+                let garbler_commit = Projective::generator() * garbler_secret_fr;
+
+                let mut enc = TapSighash::engine();
+                sighash_cache
+                    .taproot_encode_signing_data_to(
+                        &mut enc,
+                        0,
+                        &Prevouts::All(&prevouts),
+                        None,
+                        Some((
+                            ScriptPath::with_defaults(script.as_script()).into(),
+                            code_separator_pos(i),
+                        )),
+                        TapSighashType::Default,
+                    )
+                    .unwrap();
+                let sighash = TapSighash::from_engine(enc).to_byte_array().to_vec();
+
+                let adaptor = AdaptorInfo::new(
+                    &evaluator_secret_fr,
+                    garbler_commit,
+                    sighash.as_slice(),
+                    &mut rng,
+                );
+
+                let garbler_sig_bytes = adaptor.garbler_signature(&garbler_secret_fr);
+                let verifying_key: VerifyingKey = *evaluator_privkey.verifying_key();
+                let ksig = KSig::try_from(garbler_sig_bytes.as_slice()).expect("valid sig");
+                verifying_key
+                    .verify_raw(sighash.as_slice(), &ksig)
+                    .expect("signature should be valid");
+
+                let secret = adaptor
+                    .extract_secret(&garbler_sig_bytes)
+                    .expect("secret should be extracted");
+                assert_eq!(secret, garbler_secret_fr);
+                garbler_sig_bytes.to_vec()
+            })
+            .collect::<Vec<_>>();
+
+        let control_block = spend_info
+            .control_block(&(script.clone(), LeafVersion::TapScript))
+            .unwrap()
+            .serialize();
+
+        tx.input[0].witness = [
+            sigs.iter().cloned().rev().collect::<Vec<_>>(),
+            vec![script.to_bytes(), control_block.clone()],
+        ]
+        .concat()
+        .into();
+
+        (tx, prevouts, sigs, control_block)
     }
 
     #[test]
@@ -361,112 +474,62 @@ mod bitvm_tests {
 
     #[test]
     fn test_tx_multiple_sigs() {
-        let evaluator_privkey = SigningKey::random(&mut rand::thread_rng());
-        let evaluator_pubkey = evaluator_privkey.verifying_key().as_affine().x().to_vec();
-        let mut rng = rand::thread_rng();
-
         let num_sigs = 3;
-
-        // assumes num_sigs >= 2
-        let script = script! {
-            { evaluator_pubkey.clone() }
-
-            for _ in 0..num_sigs - 1 {
-                OP_TUCK
-                OP_CHECKSIGVERIFY
-                OP_CODESEPARATOR
-            }
-
-            OP_CHECKSIG
-        }
-        .compile();
-
-        let spend_info = spend_info_from_script(script.clone());
-        let address = address_from_spend_info(&spend_info, Network::Testnet);
-        let mut tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn::default()],
-            output: vec![TxOut {
-                value: Amount::from_sat(2000),
-                script_pubkey: address.script_pubkey(),
-            }],
-        };
-
-        // Provide a concrete prevout matching the spend script to compute taproot sighash
-        let prevouts = vec![TxOut {
-            value: Amount::from_sat(2000),
-            script_pubkey: address.script_pubkey(),
-        }];
-        let mut sighash_cache = SighashCache::new(&tx);
-
-        let sigs = (0..num_sigs)
-            .map(|i| {
-                let evaluator_secret_fr =
-                    fr_from_be_bytes_mod_order(evaluator_privkey.to_bytes().as_slice());
-
-                let garbler_secret_fr = Fr::rand(&mut rng);
-                let garbler_commit = Projective::generator() * garbler_secret_fr;
-
-                let mut enc = TapSighash::engine();
-                sighash_cache
-                    .taproot_encode_signing_data_to(
-                        &mut enc,
-                        0,
-                        &Prevouts::All(&prevouts),
-                        None,
-                        Some((
-                            ScriptPath::with_defaults(script.as_script()).into(),
-                            if i == 0 { 0xFFFFFFFF } else { 3 * i + 32 },
-                        )),
-                        TapSighashType::Default,
-                    )
-                    .unwrap();
-                let sighash = TapSighash::from_engine(enc).to_byte_array().to_vec();
-
-                let adaptor = AdaptorInfo::new(
-                    &evaluator_secret_fr,
-                    garbler_commit,
-                    sighash.as_slice(),
-                    &mut rng,
-                );
-
-                let garbler_sig_bytes = adaptor.garbler_signature(&garbler_secret_fr);
-                // Verify using k256 in test only
-                let verifying_key: VerifyingKey = *evaluator_privkey.verifying_key();
-                let ksig = KSig::try_from(garbler_sig_bytes.as_slice()).expect("valid sig");
-                verifying_key
-                    .verify_raw(sighash.as_slice(), &ksig)
-                    .expect("signature should be valid");
-
-                let secret = adaptor
-                    .extract_secret(&garbler_sig_bytes)
-                    .expect("secret should be extracted");
-                assert_eq!(secret, garbler_secret_fr);
-                garbler_sig_bytes.to_vec()
-            })
-            .collect::<Vec<_>>();
-
-        let control_block = spend_info
-            .control_block(&(script.clone(), LeafVersion::TapScript))
-            .unwrap()
-            .serialize();
-
-        tx.input[0].witness = [
-            sigs.iter().cloned().rev().collect::<Vec<_>>(),
-            vec![script.to_bytes(), control_block.clone()],
-        ]
-        .concat()
-        .into();
+        let (mut tx, prevouts, sigs, control_block) = build_multi_sig_tx(num_sigs);
         assert!(bitvm::dry_run_taproot_input(&tx, 0, &prevouts[..]).success);
 
         // Test with different order of sigs: should fail
         tx.input[0].witness = [
             sigs.to_vec(),
-            vec![script.to_bytes(), control_block.clone()],
+            vec![
+                tx.input[0]
+                    .witness
+                    .nth(num_sigs)
+                    .expect("script already present")
+                    .to_vec(),
+                control_block.clone(),
+            ],
         ]
         .concat()
         .into();
         assert!(!bitvm::dry_run_taproot_input(&tx, 0, &prevouts[..]).success);
+    }
+
+    #[test]
+    #[ignore = "one-shot tx size experiment"]
+    fn test_challenge_assert_tx_size_508_bitwise() {
+        let num_sigs = 508;
+        let (tx, prevouts, _, control_block) = build_multi_sig_tx(num_sigs);
+        let res = bitvm::dry_run_taproot_input(&tx, 0, &prevouts[..]);
+        assert!(res.success, "508-bitwise adaptor spend should validate");
+
+        let raw_bytes = consensus::serialize(&tx);
+        let base_size = tx.base_size();
+        let total_size = tx.total_size();
+        let witness_size = total_size - base_size;
+        let script_bytes = tx.input[0]
+            .witness
+            .nth(num_sigs)
+            .expect("script present in witness")
+            .len();
+        let sig_bytes = tx.input[0]
+            .witness
+            .iter()
+            .take(num_sigs)
+            .map(|item| item.len())
+            .sum::<usize>();
+
+        println!("ChallengeAssert 508-bitwise measurement");
+        println!("num_sigs: {num_sigs}");
+        println!("signature_bytes_total: {sig_bytes}");
+        println!("script_bytes: {script_bytes}");
+        println!("control_block_bytes: {}", control_block.len());
+        println!("base_size: {base_size}");
+        println!("witness_size: {witness_size}");
+        println!("serialized_len: {}", raw_bytes.len());
+        println!("total_size: {total_size}");
+        println!("weight_wu: {}", tx.weight().to_wu());
+        println!("vsize: {}", tx.vsize());
+        println!("under_10k_vb: {}", tx.vsize() < 10_000);
     }
 }
