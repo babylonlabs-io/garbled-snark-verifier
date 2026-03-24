@@ -142,11 +142,3 @@ required-features = ["test-utils"]
 name = "soldering"
 required-features = ["sp1-soldering"]
 
-[[bench]]
-name = "garble_point_ops"
-harness = false
-
-[[bench]]
-name = "vsss_overhead"
-harness = false
-required-features = ["vsss"]

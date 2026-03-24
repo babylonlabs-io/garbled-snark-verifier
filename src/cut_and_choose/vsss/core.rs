@@ -1,4 +1,7 @@
-use std::ops::{Add, Mul};
+use std::{
+    ops::{Add, Mul},
+    sync::OnceLock,
+};
 
 use ark_ec::{PrimeGroup, scalar_mul::BatchMulPreprocessing};
 use ark_ff::{BigInteger, Field, One, PrimeField, UniformRand, Zero};
@@ -55,6 +58,11 @@ impl Secp256k1 {
         }
     }
 
+    pub fn shared() -> &'static Self {
+        static SECP256K1: OnceLock<Secp256k1> = OnceLock::new();
+        SECP256K1.get_or_init(Self::new)
+    }
+
     // Replacement of BatchMulPreprocessing::batch_mul, which (1) uses rayon parallelization
     // and (2) converts the result to an affine point instead of a projective point.
     pub fn generator_batch_mul(&self, scalars: &[Fr]) -> Vec<Projective> {
@@ -68,15 +76,14 @@ impl Secp256k1 {
             .max_scalar_size
             .div_ceil(self.generator.window);
         let modulus_size = Fr::MODULUS_BIT_SIZE as usize;
-        let scalar_val = scalar.into_bigint().to_bits_le();
+        let scalar_val = scalar.into_bigint();
 
         let mut res = Projective::from(self.generator.table[0][0]);
         for outer in 0..outerc {
             let mut inner = 0usize;
             for i in 0..self.generator.window {
-                if outer * self.generator.window + i < modulus_size
-                    && scalar_val[outer * self.generator.window + i]
-                {
+                let bit_index = outer * self.generator.window + i;
+                if bit_index < modulus_size && scalar_val.get_bit(bit_index) {
                     inner |= 1 << i;
                 }
             }

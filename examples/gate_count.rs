@@ -1,20 +1,18 @@
-// Gate-count example for a Boolean GC circuit computing x^2, x^3, y^2, and xy.
+// Groth16-based gate-count example emitting the JSON schema used by CI badges.
+// Modeled after examples/groth16_mpc.rs, but focused on counting and JSON output.
 
 use std::env;
 
+use ark_ec::AffineRepr;
 use garbled_snark_verifier::{
-    Fp254Impl, FqWire,
-    ark::{self, PrimeField, UniformRand},
+    ark,
+    ark::{CircuitSpecificSetupSNARK, SNARK, UniformRand},
     circuit::{CircuitBuilder, StreamingResult},
+    garbled_groth16,
+    test_utils::DummyCircuit,
 };
-use num_bigint::BigUint;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
-
-mod point_ops;
-use point_ops::{
-    OUTPUT_LABELS, PointInput, decode_outputs_from_bits, expected_outputs, point_ops_circuit,
-};
 
 // Human-readable number formatter
 fn format_number(n: u64) -> String {
@@ -29,43 +27,73 @@ fn format_number(n: u64) -> String {
     }
 }
 
-const CAPACITY: usize = 500_000;
-
-fn fq_to_string(v: &ark::Fq) -> String {
-    BigUint::from(v.clone().into_bigint()).to_str_radix(10)
-}
+/// Circuit size parameter k, where constraints = 2^k
+const K: usize = 6; // match main branch default
 
 fn main() {
     let args: Vec<String> = env::args().collect();
     let json_output = args.iter().any(|a| a == "--json");
+    let is_compressed = args.iter().any(|a| a == "--compressed");
     if !json_output {
         println!(
-            "Running gate-count example for x^2, x^3, y^2, xy (Fq {}-bit)",
-            FqWire::N_BITS
+            "Running Groth16 gate-count example: k={}, constraints={}, mode={}",
+            K,
+            1 << K,
+            if is_compressed {
+                "compressed"
+            } else {
+                "uncompressed"
+            }
         );
     }
 
     // Deterministic RNG for reproducibility
     let mut rng = ChaCha20Rng::seed_from_u64(12345);
-    let input = PointInput::new(ark::Fq::rand(&mut rng), ark::Fq::rand(&mut rng));
-    let x_val = input.x.clone();
-    let y_val = input.y.clone();
-    let expected = expected_outputs(&x_val, &y_val);
 
-    let result: StreamingResult<_, _, Vec<bool>> =
-        CircuitBuilder::streaming_execute(input, CAPACITY, point_ops_circuit);
+    // Build a tiny multiplicative circuit and produce a valid Groth16 proof
+    let circuit = DummyCircuit::<ark::Fr> {
+        a: Some(ark::Fr::rand(&mut rng)),
+        b: Some(ark::Fr::rand(&mut rng)),
+        num_variables: 10,
+        num_constraints: 1 << K,
+    };
 
-    let outputs = decode_outputs_from_bits(&result.output_value);
-    assert_eq!(outputs, expected, "circuit outputs mismatch");
+    let (pk, vk) = ark::Groth16::<ark::Bn254>::setup(circuit, &mut rng).unwrap();
+    let c_val = circuit.a.unwrap() * circuit.b.unwrap();
+    let proof = ark::Groth16::<ark::Bn254>::prove(&pk, circuit, &mut rng).unwrap();
 
-    let total_gates = result.gate_count.total_gate_count();
-    let nonfree_gates = result.gate_count.nonfree_gate_count();
+    // Construct input once, then choose uncompressed vs compressed execution
+    let verify = garbled_groth16::VerifierInput {
+        public: vec![c_val],
+        a: proof.a.into_group(),
+        b: proof.b.into_group(),
+        c: proof.c.into_group(),
+        vk: vk.clone(),
+    };
+
+    let (verified, gate_count) = if is_compressed {
+        // Compressed path includes decompression gadgets; allocate more gates
+        let result: StreamingResult<_, _, bool> = CircuitBuilder::streaming_execute(
+            verify.compress(),
+            160_000,
+            garbled_groth16::verify_compressed,
+        );
+
+        (result.output_value, result.gate_count)
+    } else {
+        let result: StreamingResult<_, _, bool> =
+            CircuitBuilder::streaming_execute(verify, 160_000, garbled_groth16::verify);
+
+        (result.output_value, result.gate_count)
+    };
+
+    let total_gates = gate_count.total_gate_count();
+    let nonfree_gates = gate_count.nonfree_gate_count();
     let free_gates = total_gates.saturating_sub(nonfree_gates);
 
     if json_output {
-        let output_strings: Vec<String> = outputs.iter().map(fq_to_string).collect();
         let output = serde_json::json!({
-            "field_bits": FqWire::N_BITS,
+            "circuit_size": { "k": K, "constraints": 1 << K },
             "gate_count": {
                 "nonfree": nonfree_gates,
                 "nonfree_formatted": format_number(nonfree_gates),
@@ -73,31 +101,25 @@ fn main() {
                 "free_formatted": format_number(free_gates),
                 "total": total_gates,
                 "total_formatted": format_number(total_gates),
-                "breakdown": result.gate_count.0
+                "breakdown": gate_count.0
             },
-            "inputs": {
-                "x": fq_to_string(&x_val),
-                "y": fq_to_string(&y_val)
-            },
-            "outputs": {
-                "x_sq": output_strings[0],
-                "x_cu": output_strings[1],
-                "y_sq": output_strings[2],
-                "xy": output_strings[3]
-            }
+            "verification_result": verified,
+            "compressed": is_compressed
         });
         println!("{}", serde_json::to_string_pretty(&output).expect("json"));
     } else {
-        println!("\n=== GATE COUNT ===");
+        println!("\n=== GATE COUNT (Groth16) ===");
         println!("non-free: {}", nonfree_gates);
         println!("free:     {}", free_gates);
         println!("total:    {}", total_gates);
-        println!("\n=== INPUTS ===");
-        println!("x: {}", fq_to_string(&x_val));
-        println!("y: {}", fq_to_string(&y_val));
-        println!("\n=== OUTPUTS ===");
-        for (label, value) in OUTPUT_LABELS.iter().zip(outputs.iter()) {
-            println!("{}: {}", label, fq_to_string(value));
-        }
+        println!("verified: {}", verified);
+        println!(
+            "mode:     {}",
+            if is_compressed {
+                "compressed"
+            } else {
+                "uncompressed"
+            }
+        );
     }
 }

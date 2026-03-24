@@ -96,7 +96,7 @@ impl<const W: usize> VSSSContext<W> {
     }
 
     pub fn share_commits<LH: LabelCommitHasher>(&self) -> Vec<ShareCommits<Canonical<Projective>>> {
-        let secp = Secp256k1::new();
+        let secp = Secp256k1::shared();
 
         // Convert canonical polynomials back and compute share commitments in parallel.
         crate::cut_and_choose::get_optimized_pool().install(|| {
@@ -105,7 +105,7 @@ impl<const W: usize> VSSSContext<W> {
                 .map(|polynomial| {
                     polynomial
                         .from_canonical()
-                        .share_commits(&secp, self.wide_label_shares.len())
+                        .share_commits(secp, self.wide_label_shares.len())
                         .to_canonical()
                 })
                 .collect()
@@ -113,7 +113,7 @@ impl<const W: usize> VSSSContext<W> {
     }
 
     pub fn polynomial_commits(&self) -> Vec<PolynomialCommits<Canonical<Projective>>> {
-        let secp = Secp256k1::new();
+        let secp = Secp256k1::shared();
 
         crate::cut_and_choose::get_optimized_pool().install(|| {
             self.polynomials
@@ -121,7 +121,7 @@ impl<const W: usize> VSSSContext<W> {
                 .map(|polynomial| {
                     polynomial
                         .from_canonical()
-                        .coefficient_commits(&secp)
+                        .coefficient_commits(secp)
                         .to_canonical()
                 })
                 .collect()
@@ -146,20 +146,23 @@ impl<const W: usize> VSSSContext<W> {
             "input labels must match number of instances"
         );
 
-        self.wide_tables = all_input_labels
-            .iter()
-            .zip(self.wide_label_shares.iter())
-            .map(|(input_labels, wide_labels)| {
-                let wide_labels = wide_labels.iter().map(|c| c.0).collect_vec();
-                GarbledWideLabelTable::build_all::<W>(&wide_labels, input_labels)
-            })
-            .collect();
+        self.wide_tables = crate::cut_and_choose::get_optimized_pool().install(|| {
+            all_input_labels
+                .par_iter()
+                .zip(self.wide_label_shares.par_iter())
+                .map(|(input_labels, wide_labels)| {
+                    let wide_labels = wide_labels.iter().map(|c| c.0).collect_vec();
+                    GarbledWideLabelTable::build_all::<W>(&wide_labels, input_labels)
+                })
+                .collect()
+        });
 
-        self.wide_table_commits = self
-            .wide_tables
-            .iter()
-            .map(|tables| GarbledWideLabelTable::aggregate_hash(tables))
-            .collect();
+        self.wide_table_commits = crate::cut_and_choose::get_optimized_pool().install(|| {
+            self.wide_tables
+                .par_iter()
+                .map(|tables| GarbledWideLabelTable::aggregate_hash(tables))
+                .collect()
+        });
     }
 
     pub fn wide_table_commits(&self) -> &[[u8; 32]] {

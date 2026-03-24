@@ -88,7 +88,7 @@ impl<GH: GateHasher, LH: LabelCommitHasher, const W: usize> VSSSContext<GH, LH, 
     }
 
     pub fn verify_open_shares(&self, open_instance_data: &[OpenVsssInstance]) -> Result<(), ()> {
-        let secp = Secp256k1::new();
+        let secp = Secp256k1::shared();
         let share_commits = &self.commits.share_commits;
 
         info!("Evaluator: verifying share commits...");
@@ -104,7 +104,7 @@ impl<GH: GateHasher, LH: LabelCommitHasher, const W: usize> VSSSContext<GH, LH, 
 
                 share_commit
                     .from_canonical()
-                    .verify_shares(&secp, &shares)
+                    .verify_shares(secp, &shares)
                     .map_err(|_| ())
             })
     }

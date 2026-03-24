@@ -322,7 +322,7 @@ fn run_evaluator(
 
     info!("Evaluator: setting up adaptor sigs...");
     let adaptor_sigs = {
-        let dummy_sighashes = (0..commits.share_commits.len().div_ceil(1usize << 8))
+        let dummy_sighashes = (0..commits.share_commits.len().div_ceil(256))
             .map(|i| i.to_be_bytes().to_vec())
             .collect_vec();
         EvaluatorAdaptorSigs::new::<8>(
